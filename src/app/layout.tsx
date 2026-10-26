@@ -13,7 +13,10 @@ export const metadata: Metadata = {
   // Absolute base for og:image; social crawlers reject relative URLs. Empty
   // until the project is published, which Next.js treats as "no base".
   ...(site.url ? { metadataBase: new URL(site.url) } : {}),
-  title: site.title,
+  title: {
+    default: site.title,
+    template: `%s · ${site.title}`,
+  },
   description: site.description,
 };
 
@@ -33,8 +36,8 @@ export default function RootLayout({
       >
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
-          enableSystem
+          defaultTheme="light"
+          enableSystem={false}
           disableTransitionOnChange
         >
           {children}
