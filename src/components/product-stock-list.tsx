@@ -2,6 +2,8 @@
 
 import { AlertCircle, AlertTriangle, Refrigerator, SearchX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { AddProductDialog } from "@/components/add-product-dialog";
 import { ALL_CATEGORIES, CategoryFilter } from "@/components/category-filter";
 import { EmptyState } from "@/components/empty-state";
 import { StockSearch } from "@/components/stock-search";
@@ -9,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDays, formatQuantity } from "@/lib/format";
-import { loadProducts } from "@/lib/storage";
+import { loadProducts, saveProducts } from "@/lib/storage";
 import type { Product } from "@/lib/types";
 
 /** Остаток в целых днях; null — расход не задан. */
@@ -153,6 +155,16 @@ export function ProductStockList() {
     setCategory(ALL_CATEGORIES);
   };
 
+  // Сохраняет в storage и сразу показывает продукт: фильтры сбрасываем,
+  // чтобы новый элемент не спрятал активный поиск или категория.
+  const handleCreate = async (product: Product) => {
+    const next = [...(products ?? []), product];
+    await saveProducts(next);
+    setProducts(next);
+    resetFilters();
+    toast.success("Продукт добавлен");
+  };
+
   if (failed) {
     return (
       <div
@@ -179,16 +191,20 @@ export function ProductStockList() {
 
   if (products.length === 0) {
     return (
-      <EmptyState
-        icon={Refrigerator}
-        title="Пока нет продуктов"
-        description="Добавьте первый продукт."
-      />
+      <div className="space-y-3">
+        <AddProductDialog categories={categories} onCreate={handleCreate} />
+        <EmptyState
+          icon={Refrigerator}
+          title="Пока нет продуктов"
+          description="Добавьте первый продукт."
+        />
+      </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      <AddProductDialog categories={categories} onCreate={handleCreate} />
       <StockSearch value={query} onChange={setQuery} />
       {categories.length > 0 && (
         <CategoryFilter
