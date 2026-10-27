@@ -1,16 +1,36 @@
 "use client";
 
-import { AlertCircle, AlertTriangle, Refrigerator, SearchX } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Pencil,
+  Plus,
+  Refrigerator,
+  SearchX,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { AddProductDialog } from "@/components/add-product-dialog";
 import { ALL_CATEGORIES, CategoryFilter } from "@/components/category-filter";
 import { EmptyState } from "@/components/empty-state";
+import { ProductDialog } from "@/components/product-dialog";
 import { StockSearch } from "@/components/stock-search";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDays, formatQuantity } from "@/lib/format";
+import { NUMBER_ERROR, parseAmount } from "@/lib/product-form";
 import { loadProducts, saveProducts } from "@/lib/storage";
 import type { Product } from "@/lib/types";
 
@@ -20,10 +40,165 @@ function daysLeft(product: Product): number | null {
   return Math.floor(product.stock / product.dailyRate);
 }
 
-function StockCard({ product }: { product: Product }) {
+type EditorState = { mode: "create" } | { mode: "edit"; product: Product };
+
+function StockEditor({
+  product,
+  onSave,
+}: {
+  product: Product;
+  onSave: (stock: number) => Promise<void>;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // При входе в режим правки выделяем всё значение для быстрой замены.
+  useEffect(() => {
+    if (!editing) return;
+    const input = inputRef.current;
+    if (input === null) return;
+    input.focus();
+    input.select();
+  }, [editing]);
+
+  const startEditing = () => {
+    setDraft(formatQuantity(product.stock));
+    setError(null);
+    setEditing(true);
+  };
+
+  const revert = () => {
+    if (saving) return;
+    setEditing(false);
+    setError(null);
+  };
+
+  const commit = async () => {
+    if (saving) return;
+    const trimmed = draft.trim();
+    const value = trimmed === "" ? null : parseAmount(trimmed);
+    if (value === null) {
+      setError(trimmed === "" ? "Введите число" : NUMBER_ERROR);
+      return;
+    }
+    if (value === product.stock) {
+      // Значение не изменилось — storage не трогаем.
+      setEditing(false);
+      setError(null);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(value);
+      setEditing(false);
+    } catch {
+      // Запись не прошла: показываем прежний остаток в карточке.
+      setEditing(false);
+      toast.error("Не удалось сохранить остаток");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={startEditing}
+        className="cursor-pointer rounded-sm text-sm font-semibold tabular-nums underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        aria-label={`Изменить остаток: ${formatQuantity(product.stock)} ${product.unit}`}
+      >
+        {formatQuantity(product.stock)} {product.unit}
+      </button>
+    );
+  }
+
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1.5">
+        <Input
+          ref={inputRef}
+          value={draft}
+          disabled={saving}
+          inputMode="decimal"
+          aria-label={`Остаток, ${product.unit}`}
+          aria-invalid={error !== null}
+          aria-describedby={
+            error !== null ? `stock-error-${product.id}` : undefined
+          }
+          className="h-8 w-20 text-sm font-semibold tabular-nums"
+          onChange={(event) => {
+            setDraft(event.target.value);
+            if (error !== null) setError(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              revert();
+            }
+          }}
+          onBlur={() => {
+            if (saving) return;
+            const trimmed = draft.trim();
+            // Уход с невалидным значением — возвращаем прежний остаток.
+            if (trimmed === "" || parseAmount(trimmed) === null) {
+              setEditing(false);
+              setError(null);
+              return;
+            }
+            void commit();
+          }}
+        />
+        <span className="text-sm text-muted-foreground">{product.unit}</span>
+      </div>
+      {error !== null && (
+        <p
+          id={`stock-error-${product.id}`}
+          role="alert"
+          className="mt-1 text-xs text-destructive"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StockCard({
+  product,
+  onEdit,
+  onDelete,
+  onStockSave,
+}: {
+  product: Product;
+  onEdit: (product: Product) => void;
+  onDelete: (productId: string) => Promise<void>;
+  onStockSave: (productId: string, stock: number) => Promise<void>;
+}) {
   const days = daysLeft(product);
   const outOfStock = product.stock === 0;
   const runningOut = !outOfStock && days !== null && days < 2;
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await onDelete(product.id);
+    } catch {
+      toast.error("Не удалось удалить продукт");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <li className="relative overflow-hidden rounded-xl border bg-card p-4">
@@ -35,7 +210,7 @@ function StockCard({ product }: { product: Product }) {
           }`}
         />
       ) : null}
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{product.name}</p>
           {product.category !== null && (
@@ -44,34 +219,82 @@ function StockCard({ product }: { product: Product }) {
             </Badge>
           )}
         </div>
-        <p className="shrink-0 text-sm font-semibold tabular-nums">
-          {formatQuantity(product.stock)} {product.unit}
-        </p>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 text-muted-foreground hover:text-foreground"
+            aria-label="Редактировать"
+            onClick={() => onEdit(product)}
+          >
+            <Pencil className="h-4 w-4" aria-hidden />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 text-muted-foreground hover:text-destructive"
+            aria-label="Удалить"
+            disabled={deleting}
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+          </Button>
+        </div>
       </div>
-      <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-        {product.dailyRate !== null && product.dailyRate > 0 && (
-          <span className="tabular-nums">
-            {formatQuantity(product.dailyRate)} {product.unit}/день
-          </span>
-        )}
-        <Badge
-          variant="outline"
-          className={`ml-auto shrink-0 gap-1 border-transparent ${
-            outOfStock
-              ? "bg-destructive/10 text-destructive"
-              : runningOut
-                ? "bg-amber-500/10 text-amber-700"
-                : "bg-muted text-muted-foreground"
-          }`}
-        >
-          {(outOfStock || runningOut) && (
-            <AlertTriangle className="h-3 w-3" aria-hidden />
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <StockEditor
+          product={product}
+          onSave={(stock) => onStockSave(product.id, stock)}
+        />
+        <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+          {product.dailyRate !== null && product.dailyRate > 0 && (
+            <span className="tabular-nums">
+              {formatQuantity(product.dailyRate)} {product.unit}/день
+            </span>
           )}
-          <span className="tabular-nums">
-            {days === null ? "Хватит на —" : `Хватит на ${formatDays(days)}`}
-          </span>
-        </Badge>
+          <Badge
+            variant="outline"
+            className={`shrink-0 gap-1 border-transparent ${
+              outOfStock
+                ? "bg-destructive/10 text-destructive"
+                : runningOut
+                  ? "bg-amber-500/10 text-amber-700"
+                  : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {(outOfStock || runningOut) && (
+              <AlertTriangle className="h-3 w-3" aria-hidden />
+            )}
+            <span className="tabular-nums">
+              {days === null ? "Хватит на —" : `Хватит на ${formatDays(days)}`}
+            </span>
+          </Badge>
+        </div>
       </div>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Удалить продукт «{product.name}»?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Это действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                void handleDelete();
+              }}
+            >
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </li>
   );
 }
@@ -99,6 +322,7 @@ export function ProductStockList() {
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
+  const [editor, setEditor] = useState<EditorState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,14 +379,42 @@ export function ProductStockList() {
     setCategory(ALL_CATEGORIES);
   };
 
+  /** Пишет массив целиком в storage и обновляет список. */
+  const replaceProducts = async (next: Product[]) => {
+    await saveProducts(next);
+    setProducts(next);
+  };
+
   // Сохраняет в storage и сразу показывает продукт: фильтры сбрасываем,
   // чтобы новый элемент не спрятал активный поиск или категория.
   const handleCreate = async (product: Product) => {
-    const next = [...(products ?? []), product];
-    await saveProducts(next);
-    setProducts(next);
+    await replaceProducts([...(products ?? []), product]);
     resetFilters();
     toast.success("Продукт добавлен");
+  };
+
+  const handleUpdate = async (updated: Product) => {
+    if (!products) return;
+    await replaceProducts(
+      products.map((item) => (item.id === updated.id ? updated : item))
+    );
+    toast.success("Продукт обновлён");
+  };
+
+  const handleDelete = async (productId: string) => {
+    if (!products) return;
+    await replaceProducts(products.filter((item) => item.id !== productId));
+    toast.success("Продукт удалён");
+  };
+
+  const handleStockSave = async (productId: string, stock: number) => {
+    if (!products) return;
+    const now = new Date().toISOString();
+    await replaceProducts(
+      products.map((item) =>
+        item.id === productId ? { ...item, stock, updatedAt: now } : item
+      )
+    );
   };
 
   if (failed) {
@@ -189,55 +441,77 @@ export function ProductStockList() {
 
   if (products === null) return <StockSkeleton />;
 
-  if (products.length === 0) {
-    return (
-      <div className="space-y-3">
-        <AddProductDialog categories={categories} onCreate={handleCreate} />
+  return (
+    <div className="space-y-3">
+      <Button
+        className="w-full"
+        onClick={() => setEditor({ mode: "create" })}
+      >
+        <Plus className="h-4 w-4" aria-hidden />
+        Добавить продукт
+      </Button>
+
+      {products.length === 0 ? (
         <EmptyState
           icon={Refrigerator}
           title="Пока нет продуктов"
           description="Добавьте первый продукт."
         />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <AddProductDialog categories={categories} onCreate={handleCreate} />
-      <StockSearch value={query} onChange={setQuery} />
-      {categories.length > 0 && (
-        <CategoryFilter
-          categories={categories}
-          value={category}
-          onChange={setCategory}
-        />
-      )}
-      {filtersActive && (
-        <p className="text-xs text-muted-foreground" role="status">
-          Найдено: {filtered.length}
-        </p>
-      )}
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 py-10 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-            <SearchX className="h-7 w-7" strokeWidth={1.75} aria-hidden />
-          </div>
-          <p className="font-medium">Ничего не найдено</p>
-          <p className="max-w-[260px] text-sm text-muted-foreground">
-            Попробуйте изменить поиск или фильтр.
-          </p>
-          <Button variant="outline" size="sm" onClick={resetFilters}>
-            Сбросить фильтры
-          </Button>
-        </div>
       ) : (
-        <ul className="space-y-2">
-          {filtered.map((product) => (
-            <StockCard key={product.id} product={product} />
-          ))}
-        </ul>
+        <>
+          <StockSearch value={query} onChange={setQuery} />
+          {categories.length > 0 && (
+            <CategoryFilter
+              categories={categories}
+              value={category}
+              onChange={setCategory}
+            />
+          )}
+          {filtersActive && (
+            <p className="text-xs text-muted-foreground" role="status">
+              Найдено: {filtered.length}
+            </p>
+          )}
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-10 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                <SearchX className="h-7 w-7" strokeWidth={1.75} aria-hidden />
+              </div>
+              <p className="font-medium">Ничего не найдено</p>
+              <p className="max-w-[260px] text-sm text-muted-foreground">
+                Попробуйте изменить поиск или фильтр.
+              </p>
+              <Button variant="outline" size="sm" onClick={resetFilters}>
+                Сбросить фильтры
+              </Button>
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {filtered.map((product) => (
+                <StockCard
+                  key={product.id}
+                  product={product}
+                  onEdit={(item) => setEditor({ mode: "edit", product: item })}
+                  onDelete={handleDelete}
+                  onStockSave={handleStockSave}
+                />
+              ))}
+            </ul>
+          )}
+        </>
       )}
+
+      <ProductDialog
+        open={editor !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditor(null);
+        }}
+        mode={editor?.mode ?? "create"}
+        product={editor?.mode === "edit" ? editor.product : null}
+        categories={categories}
+        onCreate={handleCreate}
+        onUpdate={handleUpdate}
+      />
     </div>
   );
 }

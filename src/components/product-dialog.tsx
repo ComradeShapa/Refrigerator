@@ -1,6 +1,5 @@
 "use client";
 
-import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import {
   AlertDialog,
@@ -20,7 +19,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,32 +29,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { formatQuantity } from "@/lib/format";
+import {
+  EMPTY_PRODUCT_FORM,
+  submitProductForm,
+  type ProductFormErrors,
+  type ProductFormValues,
+} from "@/lib/product-form";
 import { DEFAULT_HOUSEHOLD_ID, type Product, type Unit } from "@/lib/types";
 
 const UNITS: Unit[] = ["шт", "г", "кг", "мл", "л"];
 
-const DATALIST_ID = "add-product-categories";
+const DATALIST_ID = "product-categories";
 
-const NUMBER_ERROR = "Введите неотрицательное число";
-
-type AddProductDialogProps = {
+type ProductDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mode: "create" | "edit";
+  /** В режиме edit — редактируемый продукт; в create не используется. */
+  product: Product | null;
   /** Существующие категории — подсказка в поле «Категория» (datalist). */
   categories: string[];
   /** Сохраняет продукт в storage; rejection означает ошибку записи. */
   onCreate: (product: Product) => Promise<void>;
+  /** Сохраняет изменения продукта; rejection означает ошибку записи. */
+  onUpdate: (product: Product) => Promise<void>;
 };
-
-type FieldErrors = {
-  name?: string;
-  stock?: string;
-  dailyRate?: string;
-};
-
-/** Строка → число ≥ 0; «1,5» и «1.5» равнозначны, иначе null. */
-function parseAmount(raw: string): number | null {
-  const value = Number(raw.trim().replace(",", "."));
-  return Number.isFinite(value) && value >= 0 ? value : null;
-}
 
 // randomUUID есть только в защищённом контексте — нужен запасной вариант.
 function createId(): string {
@@ -65,43 +63,56 @@ function createId(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function AddProductDialog({ categories, onCreate }: AddProductDialogProps) {
+function formValuesFromProduct(product: Product): ProductFormValues {
+  return {
+    name: product.name,
+    unit: product.unit,
+    stock: formatQuantity(product.stock),
+    dailyRate:
+      product.dailyRate === null ? "" : formatQuantity(product.dailyRate),
+    category: product.category ?? "",
+  };
+}
+
+function areSameValues(a: ProductFormValues, b: ProductFormValues): boolean {
+  return (
+    a.name === b.name &&
+    a.unit === b.unit &&
+    a.stock === b.stock &&
+    a.dailyRate === b.dailyRate &&
+    a.category === b.category
+  );
+}
+
+function ProductDialogInner({
+  open,
+  onOpenChange,
+  mode,
+  product,
+  categories,
+  onCreate,
+  onUpdate,
+}: ProductDialogProps) {
   const nameRef = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [saving, setSaving] = useState(false);
   const [storageFailed, setStorageFailed] = useState(false);
-  const [name, setName] = useState("");
-  const [unit, setUnit] = useState<Unit>("шт");
-  const [stock, setStock] = useState("0");
-  const [dailyRate, setDailyRate] = useState("");
-  const [category, setCategory] = useState("");
-  const [errors, setErrors] = useState<FieldErrors>({});
 
-  const resetForm = () => {
-    setName("");
-    setUnit("шт");
-    setStock("0");
-    setDailyRate("");
-    setCategory("");
-    setErrors({});
-    setStorageFailed(false);
-  };
+  // Компонент монтируется заново при каждом открытии (см. ProductDialog ниже),
+  // поэтому начальное состояние формы задаётся ленивыми инициализаторами.
+  const [initialValues] = useState<ProductFormValues>(() =>
+    mode === "edit" && product !== null
+      ? formValuesFromProduct(product)
+      : EMPTY_PRODUCT_FORM
+  );
+  const [values, setValues] = useState<ProductFormValues>(initialValues);
+  const [errors, setErrors] = useState<ProductFormErrors>({});
 
-  // Форма считается «грязной», если отличается от состояния по умолчанию.
-  const isDirty =
-    name.trim() !== "" ||
-    category.trim() !== "" ||
-    dailyRate.trim() !== "" ||
-    (stock.trim() !== "0" && stock.trim() !== "") ||
-    unit !== "шт";
+  const isDirty = !areSameValues(values, initialValues);
 
-  const close = () => {
-    setOpen(false);
-    resetForm();
-  };
+  const close = () => onOpenChange(false);
 
-  // Единственная точка закрытия: с введёнными данными — только через подтверждение.
+  // Единственная точка закрытия: с изменёнными данными — только через подтверждение.
   const requestClose = () => {
     if (saving) return;
     if (isDirty) {
@@ -111,55 +122,65 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
     }
   };
 
-  const clearError = (field: keyof FieldErrors) => {
+  const clearError = (field: keyof ProductFormErrors) => {
     setErrors((prev) =>
       prev[field] === undefined ? prev : { ...prev, [field]: undefined }
     );
   };
 
+  const updateValue = (field: keyof ProductFormValues, value: string) => {
+    setValues((prev) => ({ ...prev, [field]: value }));
+  };
+
   const handleSubmit = async () => {
     if (saving) return;
 
-    const trimmedName = name.trim();
-    const stockValue = stock.trim() === "" ? 0 : parseAmount(stock);
-    const dailyRateRaw = dailyRate.trim();
-    const dailyRateValue =
-      dailyRateRaw === "" ? null : parseAmount(dailyRateRaw);
-
-    const nextErrors: FieldErrors = {};
-    if (trimmedName === "") nextErrors.name = "Введите название";
-    if (stockValue === null) nextErrors.stock = NUMBER_ERROR;
-    if (dailyRateRaw !== "" && dailyRateValue === null) {
-      nextErrors.dailyRate = NUMBER_ERROR;
-    }
-
-    if (
-      trimmedName === "" ||
-      stockValue === null ||
-      (dailyRateRaw !== "" && dailyRateValue === null)
-    ) {
-      setErrors(nextErrors);
+    const result = submitProductForm(values);
+    if (!result.ok) {
+      setErrors(result.errors);
       return;
     }
-
+    const parsed = result.value;
     const now = new Date().toISOString();
-    const product: Product = {
-      id: createId(),
-      householdId: DEFAULT_HOUSEHOLD_ID,
-      name: trimmedName,
-      unit,
-      stock: stockValue,
-      dailyRate: dailyRateValue,
-      category: category.trim() === "" ? null : category.trim(),
-      createdAt: now,
-      updatedAt: now,
-      lastAutoDeductAt: null,
-    };
 
     setSaving(true);
     setStorageFailed(false);
     try {
-      await onCreate(product);
+      if (mode === "edit" && product !== null) {
+        const updated: Product = {
+          ...product,
+          name: parsed.name,
+          unit: parsed.unit,
+          stock: parsed.stock,
+          dailyRate: parsed.dailyRate,
+          category: parsed.category,
+          updatedAt: now,
+        };
+        const unchanged =
+          updated.name === product.name &&
+          updated.unit === product.unit &&
+          updated.stock === product.stock &&
+          updated.dailyRate === product.dailyRate &&
+          updated.category === product.category;
+        // Изменений нет — не пишем в storage и не трогаем updatedAt.
+        if (!unchanged) {
+          await onUpdate(updated);
+        }
+      } else {
+        const created: Product = {
+          id: createId(),
+          householdId: DEFAULT_HOUSEHOLD_ID,
+          name: parsed.name,
+          unit: parsed.unit,
+          stock: parsed.stock,
+          dailyRate: parsed.dailyRate,
+          category: parsed.category,
+          createdAt: now,
+          updatedAt: now,
+          lastAutoDeductAt: null,
+        };
+        await onCreate(created);
+      }
       close();
     } catch {
       // Не закрываем модалку: введённые данные должны остаться на месте.
@@ -169,24 +190,19 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
     }
   };
 
+  const isEdit = mode === "edit";
+
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         if (next) {
-          resetForm();
-          setOpen(true);
+          onOpenChange(true);
         } else {
           requestClose();
         }
       }}
     >
-      <DialogTrigger asChild>
-        <Button className="w-full">
-          <Plus className="h-4 w-4" aria-hidden />
-          Добавить продукт
-        </Button>
-      </DialogTrigger>
       <DialogContent
         onOpenAutoFocus={(event) => {
           // Фокус сразу в «Название», а не в первый попавшийся элемент.
@@ -203,9 +219,13 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
           }}
         >
           <DialogHeader>
-            <DialogTitle>Новый продукт</DialogTitle>
+            <DialogTitle>
+              {isEdit ? "Редактировать продукт" : "Новый продукт"}
+            </DialogTitle>
             <DialogDescription>
-              Продукт появится в списке остатков.
+              {isEdit
+                ? "Изменения сразу появятся в списке остатков."
+                : "Продукт появится в списке остатков."}
             </DialogDescription>
           </DialogHeader>
 
@@ -214,9 +234,9 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
             <Input
               id="product-name"
               ref={nameRef}
-              value={name}
+              value={values.name}
               onChange={(event) => {
-                setName(event.target.value);
+                updateValue("name", event.target.value);
                 clearError("name");
               }}
               aria-invalid={errors.name !== undefined}
@@ -235,8 +255,10 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
             <div className="space-y-1.5">
               <Label htmlFor="product-unit">Единица измерения</Label>
               <Select
-                value={unit}
-                onValueChange={(value) => setUnit(value as Unit)}
+                value={values.unit}
+                onValueChange={(value) => {
+                  setValues((prev) => ({ ...prev, unit: value as Unit }));
+                }}
               >
                 <SelectTrigger id="product-unit" aria-label="Единица измерения">
                   <SelectValue />
@@ -251,14 +273,16 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="product-stock">Начальный остаток</Label>
+              <Label htmlFor="product-stock">
+                {isEdit ? "Остаток" : "Начальный остаток"}
+              </Label>
               <Input
                 id="product-stock"
                 type="text"
                 inputMode="decimal"
-                value={stock}
+                value={values.stock}
                 onChange={(event) => {
-                  setStock(event.target.value);
+                  updateValue("stock", event.target.value);
                   clearError("stock");
                 }}
                 aria-invalid={errors.stock !== undefined}
@@ -286,9 +310,9 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
               type="text"
               inputMode="decimal"
               placeholder="Например, 0,5"
-              value={dailyRate}
+              value={values.dailyRate}
               onChange={(event) => {
-                setDailyRate(event.target.value);
+                updateValue("dailyRate", event.target.value);
                 clearError("dailyRate");
               }}
               aria-invalid={errors.dailyRate !== undefined}
@@ -319,8 +343,8 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
               id="product-category"
               type="text"
               list={DATALIST_ID}
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
+              value={values.category}
+              onChange={(event) => updateValue("category", event.target.value)}
               aria-describedby="product-category-hint"
             />
             <datalist id={DATALIST_ID}>
@@ -335,7 +359,9 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
 
           {storageFailed && (
             <p role="alert" className="text-sm font-medium text-destructive">
-              Не удалось сохранить продукт
+              {isEdit
+                ? "Не удалось сохранить изменения"
+                : "Не удалось сохранить продукт"}
             </p>
           )}
 
@@ -368,4 +394,10 @@ export function AddProductDialog({ categories, onCreate }: AddProductDialogProps
       </AlertDialog>
     </Dialog>
   );
+}
+
+export function ProductDialog(props: ProductDialogProps) {
+  // Ключ по open: при каждом открытии форма монтируется заново и заполняется
+  // с нуля — без синхронизации состояния в эффекте.
+  return <ProductDialogInner key={props.open ? "open" : "closed"} {...props} />;
 }
