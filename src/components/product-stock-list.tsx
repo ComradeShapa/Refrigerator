@@ -1,8 +1,10 @@
 "use client";
 
-import { AlertCircle, Refrigerator } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertCircle, Refrigerator, SearchX } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ALL_CATEGORIES, CategoryFilter } from "@/components/category-filter";
 import { EmptyState } from "@/components/empty-state";
+import { StockSearch } from "@/components/stock-search";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -79,6 +81,8 @@ export function ProductStockList() {
   const [products, setProducts] = useState<Product[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>(ALL_CATEGORIES);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +105,38 @@ export function ProductStockList() {
   const retry = () => {
     setFailed(false);
     setAttempt((value) => value + 1);
+  };
+
+  // Уникальные непустые категории в алфавитном порядке.
+  const categories = useMemo(() => {
+    if (products === null) return [];
+    const unique = new Set<string>();
+    for (const product of products) {
+      if (product.category !== null) unique.add(product.category);
+    }
+    return [...unique].sort((a, b) => a.localeCompare(b, "ru"));
+  }, [products]);
+
+  // Сначала фильтр по категории, затем поиск по названию (регистр и края — игнор).
+  const filtered = useMemo(() => {
+    if (products === null) return [];
+    const needle = query.trim().toLowerCase();
+    return products.filter((product) => {
+      if (category !== ALL_CATEGORIES && product.category !== category) {
+        return false;
+      }
+      if (needle !== "" && !product.name.toLowerCase().includes(needle)) {
+        return false;
+      }
+      return true;
+    });
+  }, [products, query, category]);
+
+  const filtersActive = query.trim() !== "" || category !== ALL_CATEGORIES;
+
+  const resetFilters = () => {
+    setQuery("");
+    setCategory(ALL_CATEGORIES);
   };
 
   if (failed) {
@@ -138,10 +174,40 @@ export function ProductStockList() {
   }
 
   return (
-    <ul className="space-y-2">
-      {products.map((product) => (
-        <StockCard key={product.id} product={product} />
-      ))}
-    </ul>
+    <div className="space-y-3">
+      <StockSearch value={query} onChange={setQuery} />
+      {categories.length > 0 && (
+        <CategoryFilter
+          categories={categories}
+          value={category}
+          onChange={setCategory}
+        />
+      )}
+      {filtersActive && (
+        <p className="text-xs text-muted-foreground" role="status">
+          Найдено: {filtered.length}
+        </p>
+      )}
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+            <SearchX className="h-7 w-7" strokeWidth={1.75} aria-hidden />
+          </div>
+          <p className="font-medium">Ничего не найдено</p>
+          <p className="max-w-[260px] text-sm text-muted-foreground">
+            Попробуйте изменить поиск или фильтр.
+          </p>
+          <Button variant="outline" size="sm" onClick={resetFilters}>
+            Сбросить фильтры
+          </Button>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {filtered.map((product) => (
+            <StockCard key={product.id} product={product} />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
