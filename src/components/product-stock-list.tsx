@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, Refrigerator, SearchX } from "lucide-react";
+import { AlertCircle, AlertTriangle, Refrigerator, SearchX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ALL_CATEGORIES, CategoryFilter } from "@/components/category-filter";
 import { EmptyState } from "@/components/empty-state";
@@ -24,15 +24,15 @@ function StockCard({ product }: { product: Product }) {
   const runningOut = !outOfStock && days !== null && days < 2;
 
   return (
-    <li
-      className={`rounded-xl border bg-card p-4 ${
-        outOfStock
-          ? "border-destructive/30 bg-destructive/5"
-          : runningOut
-            ? "border-amber-500/40 bg-amber-500/5"
-            : ""
-      }`}
-    >
+    <li className="relative overflow-hidden rounded-xl border bg-card p-4">
+      {outOfStock || runningOut ? (
+        <span
+          aria-hidden
+          className={`absolute inset-y-0 left-0 w-1 ${
+            outOfStock ? "bg-destructive" : "bg-amber-500"
+          }`}
+        />
+      ) : null}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{product.name}</p>
@@ -52,9 +52,23 @@ function StockCard({ product }: { product: Product }) {
             {formatQuantity(product.dailyRate)} {product.unit}/день
           </span>
         )}
-        <span className="ml-auto shrink-0 tabular-nums">
-          {days === null ? "Хватит на —" : `Хватит на ${formatDays(days)}`}
-        </span>
+        <Badge
+          variant="outline"
+          className={`ml-auto shrink-0 gap-1 border-transparent ${
+            outOfStock
+              ? "bg-destructive/10 text-destructive"
+              : runningOut
+                ? "bg-amber-500/10 text-amber-700"
+                : "bg-muted text-muted-foreground"
+          }`}
+        >
+          {(outOfStock || runningOut) && (
+            <AlertTriangle className="h-3 w-3" aria-hidden />
+          )}
+          <span className="tabular-nums">
+            {days === null ? "Хватит на —" : `Хватит на ${formatDays(days)}`}
+          </span>
+        </Badge>
       </div>
     </li>
   );
