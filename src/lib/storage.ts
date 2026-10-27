@@ -174,7 +174,8 @@ function parseShoppingItem(value: unknown): ShoppingItem | null {
   };
 }
 
-const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+/** Формат времени HH:mm (00:00–23:59): единая валидация для storage и UI. */
+export const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 function parseSettings(raw: unknown): AppSettings {
   if (!isRecord(raw)) return { ...DEFAULT_SETTINGS };
@@ -247,4 +248,29 @@ export async function loadSettings(): Promise<AppSettings> {
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
   writeJson(KEYS.settings, settings);
+}
+
+/**
+ * Полный сброс: удаляет все ключи приложения в localStorage (включая legacy v1),
+ * заново сеет каталог продуктов и возвращает настройки к значениям по умолчанию.
+ * Бросает исключение, если localStorage недоступен или запись не удалась.
+ */
+export async function resetAllData(): Promise<void> {
+  const storage = getLocalStorage();
+  if (!storage) throw new Error("localStorage недоступен");
+  // Сначала собираем ключи: удаление во время перебора сдвигает индексы.
+  const appKeys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key !== null && key.startsWith("fridge.")) {
+      appKeys.push(key);
+    }
+  }
+  for (const key of appKeys) {
+    storage.removeItem(key);
+  }
+  // После очистки loadProducts сам пересоздаёт и сохраняет каталог,
+  // saveSettings записывает настройки по умолчанию.
+  await loadProducts();
+  await saveSettings({ ...DEFAULT_SETTINGS });
 }
