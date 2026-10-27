@@ -29,6 +29,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatDays, formatQuantity } from "@/lib/format";
 import { NUMBER_ERROR, parseAmount } from "@/lib/product-form";
 import { loadProducts, saveProducts } from "@/lib/storage";
@@ -109,10 +115,17 @@ function StockEditor({
       <button
         type="button"
         onClick={startEditing}
-        className="cursor-pointer rounded-sm text-sm font-semibold tabular-nums underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="group inline-flex cursor-pointer items-center gap-1 rounded-sm text-sm font-semibold tabular-nums focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         aria-label={`Изменить остаток: ${formatQuantity(product.stock)} ${product.unit}`}
       >
-        {formatQuantity(product.stock)} {product.unit}
+        <span className="underline-offset-2 group-hover:underline group-hover:decoration-dotted">
+          {formatQuantity(product.stock)} {product.unit}
+        </span>
+        {/* Иконка-подсказка только там, где hover-эффектов нет (тач-устройства). */}
+        <Pencil
+          className="h-3 w-3 shrink-0 text-muted-foreground [@media(hover:hover)]:hidden"
+          aria-hidden
+        />
       </button>
     );
   }
@@ -220,15 +233,22 @@ function StockCard({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-10 w-10 text-muted-foreground hover:text-foreground"
-            aria-label="Редактировать"
-            onClick={() => onEdit(product)}
-          >
-            <Pencil className="h-4 w-4" aria-hidden />
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10 text-muted-foreground hover:text-foreground"
+                  aria-label="Редактировать"
+                  onClick={() => onEdit(product)}
+                >
+                  <Pencil className="h-4 w-4" aria-hidden />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Редактировать продукт</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button
             variant="ghost"
             size="icon"
