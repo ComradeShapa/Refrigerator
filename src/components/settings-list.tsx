@@ -2,25 +2,19 @@
 
 import { useEffect, useState } from "react";
 import { loadSettings } from "@/lib/storage";
-import type { ThemeSetting } from "@/lib/types";
-
-const THEME_LABELS: Record<ThemeSetting, string> = {
-  light: "Светлая",
-  dark: "Тёмная",
-  system: "Системная",
-};
+import type { AppSettings } from "@/lib/types";
 
 export function SettingsList() {
-  const [theme, setTheme] = useState<ThemeSetting | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     loadSettings()
-      .then((settings) => {
-        if (!cancelled) setTheme(settings.theme);
+      .then((value) => {
+        if (!cancelled) setSettings(value);
       })
       .catch(() => {
-        if (!cancelled) setTheme(null);
+        if (!cancelled) setSettings(null);
       });
     return () => {
       cancelled = true;
@@ -28,8 +22,11 @@ export function SettingsList() {
   }, []);
 
   const rows = [
-    { label: "Тема", value: theme ? THEME_LABELS[theme] : "—" },
-    { label: "Версия", value: "0.1.0" },
+    { label: "Конец дня", value: settings?.dayEndTime ?? "—" },
+    {
+      label: "Таймзона",
+      value: settings ? (settings.timezone ?? "Локальная") : "—",
+    },
   ];
 
   return (

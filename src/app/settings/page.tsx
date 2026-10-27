@@ -12,9 +12,6 @@ export default function SettingsPage() {
       <AppHeader title="Настройки" backHref="/" />
       <main className="flex-1 px-4 py-6">
         <SettingsList />
-        <p className="mt-4 text-center text-xs text-muted-foreground">
-          Здесь появятся параметры приложения.
-        </p>
       </main>
     </div>
   );

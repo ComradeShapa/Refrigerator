@@ -55,7 +55,11 @@ export function ProductStockList() {
         >
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{product.name}</p>
-            <p className="text-xs text-muted-foreground">{product.category}</p>
+            {product.category && (
+              <p className="text-xs text-muted-foreground">
+                {product.category}
+              </p>
+            )}
           </div>
           <p className="shrink-0 text-sm tabular-nums text-muted-foreground">
             {product.stock} {product.unit}
