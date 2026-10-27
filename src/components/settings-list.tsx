@@ -166,7 +166,12 @@ export function SettingsList() {
     >
       <section className="space-y-4 rounded-xl border bg-card p-4">
         <div className="space-y-1.5">
-          <Label htmlFor="settings-day-end">Время окончания дня</Label>
+          <Label htmlFor="settings-day-end">
+            Время окончания дня{" "}
+            <span className="font-normal text-muted-foreground">
+              (24-часовой формат)
+            </span>
+          </Label>
           <Input
             id="settings-day-end"
             type="time"
@@ -175,13 +180,21 @@ export function SettingsList() {
             disabled={saving}
             aria-invalid={fieldError !== null}
             aria-describedby={
-              fieldError !== null ? "settings-day-end-error" : undefined
+              fieldError !== null
+                ? "settings-day-end-hint settings-day-end-error"
+                : "settings-day-end-hint"
             }
             onChange={(event) => {
               setDayEndTime(event.target.value);
               if (fieldError !== null) setFieldError(null);
             }}
           />
+          <p
+            id="settings-day-end-hint"
+            className="text-xs text-muted-foreground"
+          >
+            Например, 22:00 или 07:30
+          </p>
           {fieldError !== null && (
             <p
               id="settings-day-end-error"
