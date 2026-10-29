@@ -36,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatDays, formatQuantity } from "@/lib/format";
+import { useAutoDeduction } from "@/hooks/use-auto-deduction";
 import { NUMBER_ERROR, parseAmount } from "@/lib/product-form";
 import { loadProducts, saveProducts } from "@/lib/storage";
 import type { Product } from "@/lib/types";
@@ -362,6 +363,12 @@ export function ProductStockList() {
     };
   }, [attempt]);
 
+  // Автосписание: при монтировании экрана и возврате на вкладку досчитываем
+  // пропущенные дни; результат сразу попадает в список без перезагрузки.
+  useAutoDeduction({
+    onProductsApplied: (updated) => setProducts(updated),
+  });
+
   const retry = () => {
     setFailed(false);
     setAttempt((value) => value + 1);
@@ -416,7 +423,14 @@ export function ProductStockList() {
   const handleUpdate = async (updated: Product) => {
     if (!products) return;
     await replaceProducts(
-      products.map((item) => (item.id === updated.id ? updated : item))
+      products.map((item) =>
+        item.id === updated.id
+          ? // Модалка редактирует снимок: пока она была открыта, автосписание
+            // могло обновить lastAutoDeductAt — берём актуальное значение,
+            // чтобы при следующем прогоне дни не списались повторно.
+            { ...updated, lastAutoDeductAt: item.lastAutoDeductAt }
+          : item
+      )
     );
     toast.success("Продукт обновлён");
   };
