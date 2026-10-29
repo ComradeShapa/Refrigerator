@@ -5,9 +5,11 @@ import {
   AlertTriangle,
   Pencil,
   Plus,
+  RefreshCw,
   Refrigerator,
   SearchX,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -365,9 +367,19 @@ export function ProductStockList() {
 
   // Автосписание: при монтировании экрана и возврате на вкладку досчитываем
   // пропущенные дни; результат сразу попадает в список без перезагрузки.
-  useAutoDeduction({
+  const { lastDeduction } = useAutoDeduction({
     onProductsApplied: (updated) => setProducts(updated),
   });
+
+  // Баннер эфемерный: закрытие живёт только в состоянии экрана и привязано
+  // к моменту прогона — новое автосписание покажет баннер снова.
+  const [dismissedAt, setDismissedAt] = useState<string | null>(null);
+  const banner =
+    lastDeduction !== null &&
+    lastDeduction.missedDays > 0 &&
+    lastDeduction.at !== dismissedAt
+      ? lastDeduction
+      : null;
 
   const retry = () => {
     setFailed(false);
@@ -477,6 +489,26 @@ export function ProductStockList() {
 
   return (
     <div className="space-y-3">
+      {banner !== null && (
+        <div className="flex items-center gap-3 rounded-xl border bg-card p-3 duration-200 animate-in fade-in slide-in-from-top-1 motion-reduce:animate-none">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <RefreshCw className="h-4 w-4" aria-hidden />
+          </div>
+          <p role="status" className="min-w-0 flex-1 text-sm">
+            Обновлены остатки за {formatDays(banner.missedDays)}.
+          </p>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label="Закрыть"
+            onClick={() => setDismissedAt(banner.at)}
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </Button>
+        </div>
+      )}
+
       <Button
         className="w-full"
         onClick={() => setEditor({ mode: "create" })}
