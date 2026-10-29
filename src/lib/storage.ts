@@ -242,6 +242,24 @@ export async function saveShoppingItems(items: ShoppingItem[]): Promise<void> {
   writeJson(KEYS.shoppingItems, items);
 }
 
+/**
+ * Текущий черновик — последний по createdAt среди списков со статусом draft,
+ * либо null. Входной массив не мутируется: фильтр возвращает копию.
+ */
+export async function loadDraftShoppingList(): Promise<ShoppingList | null> {
+  const drafts = (await loadShoppingLists()).filter(
+    (list) => list.status === "draft"
+  );
+  drafts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return drafts[0] ?? null;
+}
+
+/** Активный список (status === "active"), либо null, если поход не начат. */
+export async function loadActiveShoppingList(): Promise<ShoppingList | null> {
+  const lists = await loadShoppingLists();
+  return lists.find((list) => list.status === "active") ?? null;
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   return parseSettings(readJson(KEYS.settings));
 }
