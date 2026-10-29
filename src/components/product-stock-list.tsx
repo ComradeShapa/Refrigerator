@@ -37,17 +37,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { formatDays, formatQuantity } from "@/lib/format";
+import { daysLeft, formatDays, formatQuantity } from "@/lib/format";
 import { useAutoDeduction } from "@/hooks/use-auto-deduction";
 import { NUMBER_ERROR, parseAmount } from "@/lib/product-form";
 import { loadProducts, saveProducts } from "@/lib/storage";
 import type { Product } from "@/lib/types";
-
-/** Остаток в целых днях; null — расход не задан. */
-function daysLeft(product: Product): number | null {
-  if (product.dailyRate === null || product.dailyRate <= 0) return null;
-  return Math.floor(product.stock / product.dailyRate);
-}
 
 type EditorState = { mode: "create" } | { mode: "edit"; product: Product };
 

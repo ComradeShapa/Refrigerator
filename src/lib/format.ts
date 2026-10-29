@@ -3,6 +3,8 @@
  * Десятичный разделитель — точка: «2», «0.5», «1.25».
  */
 
+import type { Product } from "@/lib/types";
+
 /** Целые — без дробной части, дробные — до 2 знаков без лишних нулей. */
 export function formatQuantity(value: number): string {
   if (!Number.isFinite(value)) return "0";
@@ -20,4 +22,10 @@ export function formatDays(days: number): string {
     else if (mod10 >= 2 && mod10 <= 4) word = "дня";
   }
   return `${value} ${word}`;
+}
+
+/** Остаток в целых днях; null — расход не задан или нулевой. */
+export function daysLeft(product: Product): number | null {
+  if (product.dailyRate === null || product.dailyRate <= 0) return null;
+  return Math.floor(product.stock / product.dailyRate);
 }
