@@ -1,6 +1,7 @@
 "use client";
 
 import { Search } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -98,6 +99,7 @@ export function AddFromCatalogDialog({
   saving,
   onSelect,
 }: AddFromCatalogDialogProps) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
 
   // Регистр и пробелы по краям игнорируем — как поиск на экране «Остатки».
@@ -122,41 +124,64 @@ export function AddFromCatalogDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            type="search"
-            role="searchbox"
-            aria-label="Поиск по названию"
-            placeholder="Поиск по названию"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            className="pl-9"
-          />
-        </div>
-
-        {found.length === 0 ? (
-          <p
-            className="py-6 text-center text-sm text-muted-foreground"
-            role="status"
-          >
-            Ничего не найдено
-          </p>
+        {products.length === 0 ? (
+          <div className="py-6 text-center" role="status">
+            <p className="mx-auto max-w-[280px] text-sm text-muted-foreground">
+              На странице "Остатки" пока нет продуктов. Добавьте их, чтобы
+              выбирать из каталога
+            </p>
+            <Button
+              className="mt-4 h-10 w-full"
+              onClick={() => router.push("/")}
+            >
+              Перейти к Остаткам
+            </Button>
+          </div>
         ) : (
-          <ul className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
-            {found.map((product) => (
-              <CatalogRow
-                key={product.id}
-                product={product}
-                inList={existingProductIds.has(product.id)}
-                saving={saving}
-                onSelect={onSelect}
+          <>
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
               />
-            ))}
-          </ul>
+              <Input
+                type="search"
+                role="searchbox"
+                aria-label="Поиск по названию"
+                placeholder="Поиск по названию"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="pl-9"
+              />
+            </div>
+
+            {found.length === 0 ? (
+              <div className="py-6 text-center" role="status">
+                <p className="text-sm text-muted-foreground">
+                  Ничего не найдено
+                </p>
+                <Button
+                  variant="outline"
+                  className="mt-4 h-10 w-full"
+                  onClick={() => setQuery("")}
+                >
+                  Сбросить поиск
+                </Button>
+              </div>
+            ) : (
+              <ul className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
+                {found.map((product) => (
+                  <CatalogRow
+                    key={product.id}
+                    product={product}
+                    inList={existingProductIds.has(product.id)}
+                    saving={saving}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
         )}
 
         <DialogFooter>
