@@ -20,6 +20,16 @@ import {
   ShoppingActiveError,
   type ActiveChange,
 } from "@/lib/shopping-active";
+import { ShoppingCompletionDialog } from "@/components/shopping-completion-dialog";
+import {
+  loadCompletionPreview,
+  completeShoppingTrip,
+} from "@/lib/shopping-completion-storage";
+import {
+  ShoppingCompletionError,
+  positive,
+  type CompletionPreview,
+} from "@/lib/shopping-completion";
 import { EmptyState } from "@/components/empty-state";
 import {
   AlertDialog,
@@ -53,6 +63,9 @@ import {
 } from "@/lib/shopping-items";
 import {
   loadProducts,
+  hasPendingShoppingCompletion,
+  recoverShoppingCompletion,
+  loadCompletionSnapshot,
   loadShoppingItems,
   loadShoppingLists,
   saveShoppingItems,
@@ -302,12 +315,23 @@ export function ShoppingListView() {
   const [mutation, setMutation] = useState<
     "quantity" | "delete" | "start" | "active" | null
   >(null);
+  const [completion, setCompletion] = useState<CompletionPreview | null>(null);
+  const [completionError, setCompletionError] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryRequired, setRecoveryRequired] = useState(false);
+  const [repairId, setRepairId] = useState<string | null>(null);
+  const [repairValue, setRepairValue] = useState("");
+  const finishButtonRef = useRef<HTMLButtonElement>(null);
   const savingRef = useRef(false);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const editButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const deleteReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const actionsDisabled =
+    completion !== null ||
+    recovering ||
+    recoveryRequired ||
+    repairId !== null ||
     adding ||
     mutation !== null ||
     editingId !== null ||
@@ -334,6 +358,7 @@ export function ShoppingListView() {
     let cancelled = false;
     (async () => {
       try {
+        const recovered = recoverShoppingCompletion();
         const [allLists, allItems, allProducts] = await Promise.all([
           loadShoppingLists(),
           loadShoppingItems(),
@@ -356,7 +381,10 @@ export function ShoppingListView() {
           setItems(allItems);
           setProducts(allProducts);
           setFailed(false);
+          setRecoveryRequired(false);
           setLoaded(true);
+          if (recovered)
+            toast.success("Поход завершён. Сохранение восстановлено");
         }
       } catch {
         if (!cancelled) setFailed(true);
@@ -651,6 +679,188 @@ export function ShoppingListView() {
     }
   };
 
+  const returnCompletionFocus = () => {
+    const button = finishButtonRef.current;
+    if (button?.isConnected && !button.disabled) button.focus();
+    else focusList();
+  };
+
+  const refreshAfterCompletion = () => {
+    const snapshot = loadCompletionSnapshot();
+    const next =
+      snapshot.lists
+        .filter(
+          (entry) =>
+            entry.householdId === DEFAULT_HOUSEHOLD_ID &&
+            entry.status === "draft"
+        )
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ??
+      null;
+    setList(next);
+    setItems(snapshot.items);
+    setProducts(snapshot.products);
+    setCompletion(null);
+    setRecoveryRequired(false);
+  };
+
+  const openCompletion = () => {
+    if (!list || savingRef.current || actionsDisabled) return;
+    try {
+      const preview = loadCompletionPreview(list);
+      setCompletionError(null);
+      setCompletion(preview);
+    } catch (error) {
+      toast.error(
+        error instanceof ShoppingCompletionError
+          ? error.message
+          : "Не удалось подготовить завершение. Проверьте сохранённые данные и повторите"
+      );
+      if (
+        error instanceof ShoppingCompletionError &&
+        error.code === "plan" &&
+        error.itemId
+      ) {
+        setRepairId(error.itemId);
+        setRepairValue("");
+      }
+      setAttempt((value) => value + 1);
+    }
+  };
+
+  const confirmCompletion = (selected: string[]) => {
+    if (!completion || savingRef.current) return;
+    savingRef.current = true;
+    setRecovering(true);
+    try {
+      completeShoppingTrip(
+        completion,
+        selected,
+        new Date().toISOString(),
+        createId
+      );
+      refreshAfterCompletion();
+      toast.success("Поход завершён");
+    } catch (error) {
+      let pending = true;
+      try {
+        pending = hasPendingShoppingCompletion();
+      } catch {
+        /* Сохраняем блокировку при недоступном storage. */
+      }
+      if (pending) {
+        setCompletion(null);
+        setRecoveryRequired(true);
+      } else if (
+        error instanceof ShoppingCompletionError &&
+        error.code === "stale"
+      ) {
+        try {
+          setCompletion(loadCompletionPreview(completion.target));
+        } catch {
+          setCompletion(null);
+          setAttempt((value) => value + 1);
+          toast.error(
+            "Список изменился. Обработайте актуальные пункты перед завершением"
+          );
+        }
+      } else if (
+        error instanceof ShoppingCompletionError &&
+        ["not-active", "pending", "empty", "plan", "actual"].includes(
+          error.code
+        )
+      ) {
+        setCompletion(null);
+        setAttempt((value) => value + 1);
+        toast.error(error.message);
+      }
+      setCompletionError(
+        error instanceof ShoppingCompletionError
+          ? error.message
+          : "Не удалось завершить поход. Повторите сохранение; покупки не будут начислены дважды"
+      );
+    } finally {
+      savingRef.current = false;
+      setRecovering(false);
+    }
+  };
+
+  const retryCompletion = () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setRecovering(true);
+    try {
+      recoverShoppingCompletion();
+      // При полностью недоступном storage мы не могли узнать, успел ли
+      // сохраниться журнал. Отсутствие журнала само по себе не означает успех.
+      const snapshot = loadCompletionSnapshot();
+      const source = snapshot.lists.find((entry) => entry.id === list?.id);
+      if (source?.status !== "completed") {
+        setRecoveryRequired(false);
+        setAttempt((value) => value + 1);
+        toast.error(
+          "Завершение не было сохранено. Проверьте поход и подтвердите его снова"
+        );
+        return;
+      }
+      refreshAfterCompletion();
+      setCompletionError(null);
+      toast.success("Поход завершён");
+    } catch {
+      setCompletionError(
+        "Сохранение ещё недоступно. Повторите восстановление. Данные похода сохранены"
+      );
+    } finally {
+      savingRef.current = false;
+      setRecovering(false);
+    }
+  };
+
+  const repairPlan = async () => {
+    if (!list || !repairId || savingRef.current) return;
+    const quantity = parseAmount(repairValue);
+    if (!positive(quantity)) {
+      toast.error("Введите число больше 0");
+      return;
+    }
+    savingRef.current = true;
+    setRecovering(true);
+    try {
+      const snapshot = loadCompletionSnapshot();
+      const currentList = snapshot.lists.find(
+        (entry) =>
+          entry.id === list.id && entry.householdId === DEFAULT_HOUSEHOLD_ID
+      );
+      const item = snapshot.items.find(
+        (entry) => entry.id === repairId && entry.listId === list.id
+      );
+      if (
+        currentList?.status !== "active" ||
+        !item ||
+        positive(item.plannedQuantity)
+      )
+        throw new Error("stale");
+      const next = snapshot.items.map((entry) =>
+        entry === item
+          ? {
+              ...entry,
+              plannedQuantity: quantity,
+              updatedAt: new Date().toISOString(),
+            }
+          : entry
+      );
+      await saveShoppingItems(next);
+      setItems(next);
+      setRepairId(null);
+      toast.success("Плановое количество восстановлено");
+      requestAnimationFrame(returnCompletionFocus);
+    } catch {
+      toast.error("Не удалось исправить план. Обновите данные и повторите");
+    } finally {
+      savingRef.current = false;
+      setRecovering(false);
+    }
+  };
+
   const retry = () => {
     setFailed(false);
     setAttempt((value) => value + 1);
@@ -671,7 +881,8 @@ export function ShoppingListView() {
           Не удалось загрузить список покупок
         </p>
         <p className="mx-auto mt-1 max-w-[260px] text-sm text-muted-foreground">
-          Возможно, браузер запрещает этому сайту сохранять данные.
+          Не удалось прочитать данные или восстановить завершение похода.
+          Повторите попытку; до восстановления изменения заблокированы.
         </p>
         <Button variant="outline" size="sm" className="mt-4" onClick={retry}>
           Повторить
@@ -681,6 +892,21 @@ export function ShoppingListView() {
   }
 
   if (!loaded) return <ShoppingSkeleton />;
+
+  if (recoveryRequired)
+    return (
+      <div role="alert" className="space-y-3 rounded-xl border p-4">
+        <p className="font-medium">Нужно восстановить завершение похода</p>
+        <p className="text-sm text-muted-foreground">{completionError}</p>
+        <Button
+          ref={finishButtonRef}
+          disabled={recovering}
+          onClick={retryCompletion}
+        >
+          {recovering ? "Завершение…" : "Повторить сохранение"}
+        </Button>
+      </div>
+    );
 
   if (list === null) {
     return (
@@ -717,6 +943,91 @@ export function ShoppingListView() {
           )}
         </div>
       )}
+      {list.status === "active" && (
+        <div className="space-y-2">
+          <Button
+            ref={finishButtonRef}
+            className="h-10 w-full"
+            disabled={
+              actionsDisabled ||
+              progress.total === 0 ||
+              progress.processed !== progress.total
+            }
+            onClick={openCompletion}
+          >
+            Завершить поход
+          </Button>
+          {progress.processed !== progress.total && (
+            <p className="text-sm text-muted-foreground">
+              Сначала обработайте все пункты списка
+            </p>
+          )}
+          {progress.total === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Пустой поход нельзя завершить
+            </p>
+          )}
+        </div>
+      )}
+      {completion && (
+        <ShoppingCompletionDialog
+          key={completion.fingerprint}
+          preview={completion}
+          saving={recovering}
+          error={completionError}
+          onCancel={() => {
+            if (!savingRef.current) {
+              setCompletion(null);
+              setCompletionError(null);
+            }
+          }}
+          onConfirm={confirmCompletion}
+          onReturnFocus={returnCompletionFocus}
+        />
+      )}
+      <AlertDialog
+        open={repairId !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingRef.current) setRepairId(null);
+        }}
+      >
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            returnCompletionFocus();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Восстановить плановое количество
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              У пункта повреждён план. Укажите исходное плановое количество;
+              корректные планы активного похода остаются неизменными.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Label htmlFor="repair-plan">Плановое количество</Label>
+          <Input
+            id="repair-plan"
+            inputMode="decimal"
+            value={repairValue}
+            disabled={recovering}
+            onChange={(event) => setRepairValue(event.target.value)}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={recovering}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={recovering}
+              onClick={(event) => {
+                event.preventDefault();
+                void repairPlan();
+              }}
+            >
+              Сохранить план
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {list.status === "draft" && draftItems.length > 0 && (
         <Button
           variant="outline"

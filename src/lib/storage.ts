@@ -1,3 +1,11 @@
+import {
+  sameCompletionData,
+  validateCompletionOperation,
+} from "@/lib/shopping-completion";
+import type {
+  CompletionOperation,
+  CompletionSnapshot,
+} from "@/lib/shopping-completion";
 import { SEED_CATALOG } from "@/lib/catalog";
 import {
   DEFAULT_HOUSEHOLD_ID,
@@ -15,10 +23,12 @@ import {
  * Асинхронное хранилище приложения. Экраны работают только с этим модулем,
  * поэтому localStorage позже можно заменить на backend без правок интерфейса.
  *
- * Контракт: чтение не бросает исключений — повреждённый или отсутствующий
+ * Контракт обычного чтения: повреждённый или отсутствующий
  * JSON заменяется значениями по умолчанию (для продуктов — повторным сидом
  * каталога). Запись может бросить исключение (недоступный localStorage,
  * переполнение квоты) — вызывающий код решает, как показать проблему.
+ * Ошибки восстановления журнала бросаются и при чтении: частично применённые
+ * данные нельзя показывать или заменять значениями по умолчанию.
  */
 
 // Ключи v2: форма данных изменилась (householdId, статусы, новая Settings),
@@ -41,6 +51,7 @@ function getLocalStorage(): Storage | null {
 }
 
 function readJson(key: string): unknown {
+  recoverShoppingCompletion();
   const storage = getLocalStorage();
   if (!storage) return null;
   try {
@@ -54,6 +65,7 @@ function readJson(key: string): unknown {
 }
 
 function writeJson(key: string, value: unknown): void {
+  recoverShoppingCompletion();
   const storage = getLocalStorage();
   if (!storage) throw new Error("localStorage недоступен");
   storage.setItem(key, JSON.stringify(value));
@@ -209,7 +221,7 @@ function parseArray<T>(
   });
 }
 
-export async function loadProducts(): Promise<Product[]> {
+function readProducts(): Product[] {
   const parsed = parseArray(readJson(KEYS.products), parseProduct);
   if (parsed) return parsed;
 
@@ -227,8 +239,26 @@ export async function loadProducts(): Promise<Product[]> {
     updatedAt: now,
     lastAutoDeductAt: null,
   }));
-  await saveProducts(products);
+  writeJson(KEYS.products, products);
   return products;
+}
+
+export async function loadProducts(): Promise<Product[]> {
+  return readProducts();
+}
+
+/** Один синхронный read/modify/write после восстановления; автосписание не пишет устаревший снимок. */
+export async function updateProducts<T>(
+  update: (products: Product[]) => {
+    products: Product[];
+    result: T;
+    changed: boolean;
+  }
+): Promise<T> {
+  recoverShoppingCompletion();
+  const updated = update(readProducts());
+  if (updated.changed) writeJson(KEYS.products, updated.products);
+  return updated.result;
 }
 
 export async function saveProducts(products: Product[]): Promise<void> {
@@ -300,4 +330,204 @@ export async function resetAllData(): Promise<void> {
   // saveSettings записывает настройки по умолчанию.
   await loadProducts();
   await saveSettings({ ...DEFAULT_SETTINGS });
+}
+
+const COMPLETION_KEY = "fridge.shopping-completion.v1";
+type DataKey = "products" | "lists" | "items";
+const DATA_KEYS: Record<DataKey, string> = {
+  products: KEYS.products,
+  lists: KEYS.shoppingLists,
+  items: KEYS.shoppingItems,
+};
+const DATA_NAMES: DataKey[] = ["products", "lists", "items"];
+type CompletionJournal = {
+  version: 2;
+  operation: CompletionOperation;
+  before: Record<DataKey, string | null>;
+  after: Record<DataKey, string>;
+};
+
+function requireStorage(): Storage {
+  const storage = getLocalStorage();
+  if (!storage) throw new Error("Не удалось открыть хранилище");
+  return storage;
+}
+function parseSnapshot(
+  raw: Record<DataKey, string | null>
+): CompletionSnapshot {
+  function array<T>(key: DataKey, parse: (value: unknown) => T | null): T[] {
+    const value: unknown = raw[key] === null ? [] : JSON.parse(raw[key]!);
+    if (!Array.isArray(value))
+      throw new Error("Повреждённые данные. Завершение заблокировано");
+    return value.map((entry: unknown) => {
+      const parsed = parse(entry);
+      if (!parsed || !isRecord(entry))
+        throw new Error("Повреждённая запись. Завершение заблокировано");
+      if (
+        key === "products" &&
+        (typeof entry.stock !== "number" ||
+          !Number.isFinite(entry.stock) ||
+          entry.stock < 0)
+      )
+        throw new Error(
+          "Некорректный остаток. Исправьте его перед завершением"
+        );
+      // Сохраняем также неизвестные поля; валидные чужие записи не теряются.
+      return { ...entry, ...parsed };
+    });
+  }
+  return {
+    products: array("products", parseProduct),
+    lists: array("lists", parseShoppingList),
+    items: array("items", parseShoppingItem),
+  };
+}
+function readData(storage: Storage): Record<DataKey, string | null> {
+  return {
+    products: storage.getItem(KEYS.products),
+    lists: storage.getItem(KEYS.shoppingLists),
+    items: storage.getItem(KEYS.shoppingItems),
+  };
+}
+
+/**
+ * Roll-forward по after-images. Никаких await между journal/данными/удалением.
+ * Все обычные обращения проходят этот барьер ДО чтения/записи.
+ * Если очистка не удалась, барьер остаётся закрыт: более новых записей ещё нет.
+ * Проверка before/after дополнительно запрещает затирать посторонние изменения.
+ * Гарантия: одна вкладка, включая перезапуск. Межвкладочной блокировки нет.
+ */
+export function recoverShoppingCompletion(): boolean {
+  const storage = getLocalStorage();
+  if (!storage) return false;
+  const raw = storage.getItem(COMPLETION_KEY);
+  if (raw === null) return false;
+  const journal = validateCompletionJournal(() => JSON.parse(raw) as unknown);
+  const current = readData(storage);
+  for (const key of DATA_NAMES) {
+    if (
+      current[key] !== journal.before[key] &&
+      current[key] !== journal.after[key]
+    )
+      throw new Error(
+        "Данные изменились вне операции. Автоматическое восстановление заблокировано"
+      );
+  }
+  // Присваивание уже рассчитанных значений идемпотентно, в том числе при сбое
+  // сразу после записи любого ключа, до фиксации какого-либо отдельного флага.
+  for (const key of DATA_NAMES) {
+    if (current[key] !== journal.after[key])
+      storage.setItem(DATA_KEYS[key], journal.after[key]);
+  }
+  const applied = readData(storage);
+  if (DATA_NAMES.some((key) => applied[key] !== journal.after[key]))
+    throw new Error(
+      "Не удалось подтвердить сохранение похода. Журнал сохранён для безопасного повтора"
+    );
+  storage.removeItem(COMPLETION_KEY);
+  return true;
+}
+
+export function hasPendingShoppingCompletion(): boolean {
+  return requireStorage().getItem(COMPLETION_KEY) !== null;
+}
+export function loadCompletionSnapshot(): CompletionSnapshot {
+  recoverShoppingCompletion();
+  return parseSnapshot(readData(requireStorage()));
+}
+export function commitShoppingCompletion(
+  build: (snapshot: CompletionSnapshot) => CompletionOperation
+): void {
+  recoverShoppingCompletion();
+  const storage = requireStorage();
+  const beforeRaw = readData(storage);
+  const before = parseSnapshot(beforeRaw);
+  const operation = build(before);
+  const after = completionImages(beforeRaw, before, operation.after);
+  const journal: CompletionJournal = {
+    version: 2,
+    operation,
+    before: beforeRaw,
+    after,
+  };
+  validateCompletionJournal(() => journal);
+  // Первая запись: если она не удалась, основные ключи ещё не тронуты.
+  storage.setItem(COMPLETION_KEY, JSON.stringify(journal));
+  recoverShoppingCompletion();
+}
+
+/** Точные raw images: неизменённые legacy/чужие записи остаются исходными. */
+function completionImages(
+  beforeRaw: Record<DataKey, string | null>,
+  before: CompletionSnapshot,
+  result: CompletionSnapshot
+): Record<DataKey, string> {
+  const after = {} as Record<DataKey, string>;
+  for (const key of DATA_NAMES) {
+    const rawEntries =
+      beforeRaw[key] === null ? [] : JSON.parse(beforeRaw[key]!);
+    // Не переписываем нормализованные/legacy записи, которых операция не касалась.
+    const rawById = new Map(
+      rawEntries.map((entry: { id: string }) => [entry.id, entry])
+    );
+    const beforeById = new Map(before[key].map((entry) => [entry.id, entry]));
+    after[key] = JSON.stringify(
+      result[key].map((entry) =>
+        sameCompletionData(entry, beforeById.get(entry.id))
+          ? rawById.get(entry.id)
+          : entry
+      )
+    );
+  }
+  return after;
+}
+
+/** Полностью проверяется до сравнения текущих данных и до первой записи/очистки. */
+function validateCompletionJournal(read: () => unknown): CompletionJournal {
+  try {
+    const value = read();
+    if (
+      !isRecord(value) ||
+      value.version !== 2 ||
+      !isRecord(value.operation) ||
+      !isRecord(value.before) ||
+      !isRecord(value.after)
+    )
+      throw new Error("format");
+    const journal = value as CompletionJournal;
+    for (const key of DATA_NAMES) {
+      if (
+        (journal.before[key] !== null &&
+          typeof journal.before[key] !== "string") ||
+        typeof journal.after[key] !== "string"
+      )
+        throw new Error("images");
+    }
+    const before = parseSnapshot(journal.before);
+    if (!sameCompletionData(before, journal.operation.before))
+      throw new Error("before");
+    validateCompletionOperation(journal.operation);
+    const expected = completionImages(
+      journal.before,
+      before,
+      journal.operation.after
+    );
+    for (const key of DATA_NAMES) {
+      // Сравниваем исходные JSON-значения, а не нормализованный parseSnapshot(after):
+      // иначе отсутствующие или противоречивые поля могли бы скрыться нормализацией.
+      if (
+        !sameCompletionData(
+          JSON.parse(journal.after[key]),
+          JSON.parse(expected[key])
+        )
+      )
+        throw new Error("after");
+    }
+    return journal;
+  } catch {
+    // Старые журналы без replay-метаданных также остаются заблокированными.
+    throw new Error(
+      "Не удалось проверить данные завершения похода. Восстановление заблокировано; журнал и сохранённые данные оставлены без изменений"
+    );
+  }
 }

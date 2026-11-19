@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { applyDeductions } from "@/lib/auto-deduction";
-import { loadProducts, loadSettings, saveProducts } from "@/lib/storage";
+import { loadSettings, updateProducts } from "@/lib/storage";
 import type { Product } from "@/lib/types";
 
 /** Итог успешного прогона автосписания — для показа пользователю. */
@@ -33,7 +33,9 @@ export function useAutoDeduction({
   lastDeduction: DeductionInfo | null;
   isRunning: boolean;
 } {
-  const [lastDeduction, setLastDeduction] = useState<DeductionInfo | null>(null);
+  const [lastDeduction, setLastDeduction] = useState<DeductionInfo | null>(
+    null
+  );
   const [isRunning, setIsRunning] = useState(false);
 
   // Один прогон за раз: повторный вызов до завершения предыдущего пропускаем.
@@ -53,27 +55,31 @@ export function useAutoDeduction({
       try {
         const settings = await loadSettings();
         setIsRunning(true);
-        const products = await loadProducts();
         const now = new Date();
-        const result = applyDeductions({
-          products,
-          dayEndTime: settings.dayEndTime,
-          now,
-        });
-        if (result.hasChanges) {
-          // Ошибка записи выделена отдельно: список не обновляем, чтобы он
-          // не разошёлся с хранилищем. Неудачное чтение данных логируется
-          // молча — прогон просто пропускается до следующего вызова.
-          try {
-            await saveProducts(result.updatedProducts);
+        try {
+          const result = await updateProducts((products) => {
+            const result = applyDeductions({
+              products,
+              dayEndTime: settings.dayEndTime,
+              now,
+            });
+            return {
+              products: result.updatedProducts,
+              changed: result.hasChanges,
+              result,
+            };
+          });
+          if (result.hasChanges) {
             setLastDeduction({
               missedDays: result.maxMissedDays,
               at: now.toISOString(),
             });
             appliedRef.current(result.updatedProducts);
-          } catch {
-            toast.error("Не удалось обновить остатки");
           }
+        } catch {
+          toast.error(
+            "Не удалось обновить остатки. Повторите после восстановления похода"
+          );
         }
       } catch (error) {
         console.warn(
