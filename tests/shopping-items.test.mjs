@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { registerHooks } from "node:module";
 import { parseAmount } from "../src/lib/product-form.ts";
+import { formatShoppingQuantity } from "../src/lib/shopping-format.ts";
 import {
   addManualShoppingItem,
   findManualDuplicate,
@@ -24,6 +25,53 @@ const original = {
   createdAt,
   updatedAt: createdAt,
 };
+
+test("формат количества: обычные значения компактны и сохраняют значащие цифры", () => {
+  for (const [value, expected] of [
+    [1, "1"],
+    [1.5, "1.5"],
+    [2.25, "2.25"],
+    [1000, "1000"],
+    [1.2345678901234567, "1.2345678901234567"],
+    [0.30000000000000004, "0.30000000000000004"],
+  ]) {
+    assert.equal(formatShoppingQuantity(value), expected);
+    assert.equal(Number(formatShoppingQuantity(value)), value);
+  }
+});
+
+test("формат количества: малые положительные значения не превращаются в ноль", () => {
+  for (const [value, expected] of [
+    [0.001, "0.001"],
+    [0.000001, "0.000001"],
+    [1e-7, "1e-7"],
+    [Number.MIN_VALUE, "5e-324"],
+  ]) {
+    const formatted = formatShoppingQuantity(value);
+    assert.equal(formatted, expected);
+    assert.notEqual(formatted, "0");
+    assert.equal(Number(formatted), value);
+  }
+});
+
+test("формат количества: большие конечные значения не превращаются в Infinity", () => {
+  for (const [value, expected] of [
+    [1e308, "1e+308"],
+    [Number.MAX_VALUE, "1.7976931348623157e+308"],
+    [Number.MAX_SAFE_INTEGER, "9007199254740991"],
+  ]) {
+    const formatted = formatShoppingQuantity(value);
+    assert.equal(formatted, expected);
+    assert.equal(Number(formatted), value);
+    assert.equal(Number.isFinite(Number(formatted)), true);
+  }
+});
+
+test("формат количества: прежний безопасный вывод нуля и неконечных значений", () => {
+  for (const value of [0, -0, NaN, Infinity, -Infinity]) {
+    assert.equal(formatShoppingQuantity(value), "0");
+  }
+});
 
 test("ручной пункт: поля модели, обрезка пробелов, исходный массив не меняется", () => {
   const items = [];
