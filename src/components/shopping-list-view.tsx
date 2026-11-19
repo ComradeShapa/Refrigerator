@@ -1,24 +1,50 @@
 "use client";
 
-import { AlertCircle, ListPlus, Plus, ShoppingCart } from "lucide-react";
+import {
+  AlertCircle,
+  ListPlus,
+  Pencil,
+  Plus,
+  ShoppingCart,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AddFromCatalogDialog } from "@/components/add-from-catalog-dialog";
 import { AddItemSourceDialog } from "@/components/add-item-source-dialog";
 import { AddManualItemDialog } from "@/components/add-manual-item-dialog";
 import { EmptyState } from "@/components/empty-state";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { daysLeft, formatDays, formatQuantity } from "@/lib/format";
+import { formatShoppingQuantity } from "@/lib/shopping-format";
+import { parseAmount } from "@/lib/product-form";
+import {
+  changeDraftQuantity,
+  DRAFT_ERROR_MESSAGES,
+  removeDraftItem,
+  ShoppingDraftError,
+  startShoppingTrip,
+} from "@/lib/shopping-draft";
 import {
   addManualShoppingItem,
   type ManualItemInput,
 } from "@/lib/shopping-items";
 import {
-  loadActiveShoppingList,
-  loadDraftShoppingList,
   loadProducts,
   loadShoppingItems,
   loadShoppingLists,
@@ -82,12 +108,106 @@ function ListHeader({ status }: { status: ShoppingList["status"] }) {
   );
 }
 
+function QuantityEditor({
+  item,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  item: ShoppingItem;
+  saving: boolean;
+  onSave: (quantity: number) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(String(item.plannedQuantity ?? ""));
+  const [error, setError] = useState(false);
+  const inputId = `shopping-quantity-${item.id}`;
+
+  return (
+    <form
+      className="mt-3 space-y-2"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (saving) return;
+        const quantity = parseAmount(value);
+        if (quantity === null || quantity <= 0) {
+          setError(true);
+          return;
+        }
+        onSave(quantity);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !saving) {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+    >
+      <Label htmlFor={inputId}>Количество</Label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={inputId}
+          autoFocus
+          inputMode="decimal"
+          type="text"
+          className="min-w-0 flex-1"
+          value={value}
+          disabled={saving}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setError(false);
+          }}
+          aria-invalid={error}
+          aria-describedby={error ? `${inputId}-error` : undefined}
+        />
+        <span className="shrink-0 text-sm">{item.unit}</span>
+      </div>
+      {error && (
+        <p
+          id={`${inputId}-error`}
+          role="alert"
+          className="text-xs text-destructive"
+        >
+          Введите число больше 0
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="h-10" disabled={saving}>
+          {saving ? "Сохранение…" : "Сохранить"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10"
+          disabled={saving}
+          onClick={onCancel}
+        >
+          Отмена
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function ItemCard({
   item,
   product,
+  actions,
+  editButtonRef,
 }: {
   item: ShoppingItem;
   product: Product | null;
+  editButtonRef?: (element: HTMLButtonElement | null) => void;
+  actions?: {
+    disabled: boolean;
+    editing: boolean;
+    saving: boolean;
+    onEdit: () => void;
+    onDelete: (button: HTMLButtonElement) => void;
+    onSave: (quantity: number) => void;
+    onCancel: () => void;
+  };
 }) {
   // Продукт удалён из каталога: название не восстановить, но пункт показываем.
   const deleted = item.productId !== null && product === null;
@@ -109,7 +229,7 @@ function ItemCard({
           {name}
         </p>
         <p className="shrink-0 text-sm font-semibold tabular-nums">
-          {formatQuantity(item.plannedQuantity ?? 0)} {item.unit}
+          {formatShoppingQuantity(item.plannedQuantity ?? 0)} {item.unit}
         </p>
       </div>
       {/* Остаток и «хватит на» — только у пунктов, связанных с продуктом. */}
@@ -119,6 +239,41 @@ function ItemCard({
           {days === null ? "Хватит на —" : `Хватит на ${formatDays(days)}`}
         </p>
       )}
+      {actions &&
+        (actions.editing ? (
+          <QuantityEditor
+            item={item}
+            saving={actions.saving}
+            onSave={actions.onSave}
+            onCancel={actions.onCancel}
+          />
+        ) : (
+          <div className="mt-2 flex justify-end gap-1">
+            <Button
+              ref={editButtonRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10"
+              aria-label={`Изменить количество: ${name}`}
+              disabled={actions.disabled}
+              onClick={actions.onEdit}
+            >
+              <Pencil aria-hidden />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 text-destructive"
+              aria-label={`Удалить пункт: ${name}`}
+              disabled={actions.disabled}
+              onClick={(event) => actions.onDelete(event.currentTarget)}
+            >
+              <Trash2 aria-hidden />
+            </Button>
+          </div>
+        ))}
     </li>
   );
 }
@@ -135,8 +290,32 @@ export function ShoppingListView() {
     "source" | "catalog" | "manual" | null
   >(null);
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
+  const [mutation, setMutation] = useState<
+    "quantity" | "delete" | "start" | null
+  >(null);
   const savingRef = useRef(false);
   const addButtonRef = useRef<HTMLButtonElement>(null);
+  const editButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const deleteReturnFocusRef = useRef<HTMLButtonElement | null>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
+  const actionsDisabled =
+    adding ||
+    mutation !== null ||
+    editingId !== null ||
+    deleteItemId !== null ||
+    addDialog !== null;
+
+  const focusList = () => (addButtonRef.current ?? viewRef.current)?.focus();
+
+  const closeEditor = (itemId: string) => {
+    if (savingRef.current) return;
+    setEditingId(null);
+    requestAnimationFrame(() =>
+      (editButtonRefs.current.get(itemId) ?? addButtonRef.current)?.focus()
+    );
+  };
 
   const closeAddDialog = () => {
     if (savingRef.current) return;
@@ -148,15 +327,25 @@ export function ShoppingListView() {
     let cancelled = false;
     (async () => {
       try {
-        const [draft, active, allItems, allProducts] = await Promise.all([
-          loadDraftShoppingList(),
-          loadActiveShoppingList(),
+        const [allLists, allItems, allProducts] = await Promise.all([
+          loadShoppingLists(),
           loadShoppingItems(),
           loadProducts(),
         ]);
         if (!cancelled) {
+          const householdLists = allLists.filter(
+            (entry) => entry.householdId === DEFAULT_HOUSEHOLD_ID
+          );
+          const active = householdLists.find(
+            (entry) => entry.status === "active"
+          );
+          const draft = householdLists
+            .filter((entry) => entry.status === "draft")
+            .sort(
+              (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+            )[0];
           // Активный список важнее черновика: пользователь уже в походе.
-          setList(active ?? draft);
+          setList(active ?? draft ?? null);
           setItems(allItems);
           setProducts(allProducts);
           setFailed(false);
@@ -294,8 +483,105 @@ export function ShoppingListView() {
     }
   };
 
-  // Режим похода и правка количества — следующие шаги.
-  const notYet = () => toast("Функция появится на следующем шаге");
+  const mutateDraft = async (
+    operation:
+      | { type: "quantity"; itemId: string; quantity: number }
+      | { type: "delete"; itemId: string }
+      | { type: "start" }
+  ) => {
+    if (list?.status !== "draft" || savingRef.current || addDialog !== null)
+      return;
+    if (
+      operation.type === "start" &&
+      (editingId !== null || deleteItemId !== null)
+    )
+      return;
+    savingRef.current = true;
+    setMutation(operation.type);
+    let snapshot: { lists: ShoppingList[]; items: ShoppingItem[] } | null =
+      null;
+    try {
+      const [lists, allItems] = await Promise.all([
+        loadShoppingLists(),
+        loadShoppingItems(),
+      ]);
+      snapshot = { lists, items: allItems };
+      if (operation.type === "start") {
+        const next = startShoppingTrip(lists, allItems, list);
+        await saveShoppingLists(next);
+        setList(next.find((entry) => entry.id === list.id) ?? null);
+        setItems(allItems);
+        toast.success("Поход начат");
+        requestAnimationFrame(() => viewRef.current?.focus());
+      } else {
+        const next =
+          operation.type === "quantity"
+            ? changeDraftQuantity(
+                lists,
+                allItems,
+                list,
+                operation.itemId,
+                operation.quantity,
+                new Date().toISOString()
+              )
+            : removeDraftItem(lists, allItems, list, operation.itemId);
+        if (next !== allItems) await saveShoppingItems(next);
+        setItems(next);
+        if (operation.type === "quantity") {
+          setEditingId(null);
+          requestAnimationFrame(() =>
+            (
+              editButtonRefs.current.get(operation.itemId) ??
+              addButtonRef.current
+            )?.focus()
+          );
+          toast.success("Количество сохранено");
+        } else {
+          setDeleteItemId(null);
+          toast.success("Пункт удалён");
+        }
+      }
+    } catch (error) {
+      if (error instanceof ShoppingDraftError && snapshot) {
+        // Устаревшие данные не записываем: показываем актуальный активный список
+        // либо доступный черновик текущего домохозяйства.
+        const householdLists = snapshot.lists.filter(
+          (entry) => entry.householdId === list.householdId
+        );
+        const draft =
+          householdLists.find(
+            (entry) => entry.id === list.id && entry.status === "draft"
+          ) ??
+          householdLists
+            .filter((entry) => entry.status === "draft")
+            .sort(
+              (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+            )[0];
+        setList(
+          householdLists.find((entry) => entry.status === "active") ??
+            draft ??
+            null
+        );
+        setItems(snapshot.items);
+        setEditingId(null);
+        setDeleteItemId(null);
+        toast.error(DRAFT_ERROR_MESSAGES[error.code]);
+        requestAnimationFrame(focusList);
+      } else {
+        console.error("Не удалось изменить список покупок", error);
+        toast.error(
+          operation.type === "start"
+            ? "Не удалось начать поход. Попробуйте ещё раз"
+            : operation.type === "delete"
+              ? "Не удалось удалить пункт. Попробуйте ещё раз"
+              : "Не удалось сохранить количество. Попробуйте ещё раз"
+        );
+      }
+    } finally {
+      savingRef.current = false;
+      setMutation(null);
+    }
+  };
 
   const retry = () => {
     setFailed(false);
@@ -337,6 +623,7 @@ export function ShoppingListView() {
           description="Создайте список и добавляйте в него продукты перед походом в магазин."
         />
         <Button
+          ref={addButtonRef}
           className="h-10 w-full"
           disabled={creating}
           onClick={() => void handleCreate()}
@@ -347,27 +634,25 @@ export function ShoppingListView() {
     );
   }
 
-  if (list.status === "active") {
-    return (
-      <div className="space-y-3">
-        <ListHeader status={list.status} />
-        <Button className="h-10 w-full" onClick={notYet}>
-          Продолжить поход
-        </Button>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-1 flex-col gap-3">
+    <div
+      ref={viewRef}
+      tabIndex={-1}
+      className="flex flex-1 flex-col gap-3 outline-none"
+    >
       <ListHeader status={list.status} />
-      {draftItems.length > 0 && (
-        <Button variant="outline" className="h-10 w-full" onClick={notYet}>
-          Начать поход
+      {list.status === "draft" && draftItems.length > 0 && (
+        <Button
+          variant="outline"
+          className="h-10 w-full"
+          disabled={actionsDisabled}
+          onClick={() => void mutateDraft({ type: "start" })}
+        >
+          {mutation === "start" ? "Начинаем поход…" : "Начать поход"}
         </Button>
       )}
 
-      {draftItems.length === 0 ? (
+      {draftItems.length === 0 && list.status === "draft" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 py-6">
           <EmptyState
             icon={ListPlus}
@@ -377,6 +662,7 @@ export function ShoppingListView() {
           <Button
             ref={addButtonRef}
             className="h-10"
+            disabled={actionsDisabled}
             onClick={() => setAddDialog("source")}
           >
             <Plus className="h-4 w-4" aria-hidden />
@@ -394,16 +680,53 @@ export function ShoppingListView() {
                   ? null
                   : (productsById.get(item.productId) ?? null)
               }
+              editButtonRef={(element) => {
+                if (element) editButtonRefs.current.set(item.id, element);
+                else editButtonRefs.current.delete(item.id);
+              }}
+              actions={
+                list.status === "draft"
+                  ? {
+                      disabled: actionsDisabled,
+                      editing: editingId === item.id,
+                      saving: mutation !== null,
+                      onEdit: () => {
+                        if (!savingRef.current && !actionsDisabled)
+                          setEditingId(item.id);
+                      },
+                      onDelete: (button) => {
+                        if (savingRef.current || actionsDisabled) return;
+                        deleteReturnFocusRef.current = button;
+                        setDeleteItemId(item.id);
+                      },
+                      onSave: (quantity) =>
+                        void mutateDraft({
+                          type: "quantity",
+                          itemId: item.id,
+                          quantity,
+                        }),
+                      onCancel: () => closeEditor(item.id),
+                    }
+                  : undefined
+              }
             />
           ))}
         </ul>
       )}
 
-      {draftItems.length > 0 && (
-        <div className="sticky bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-30 mt-auto border-t bg-background py-3">
+      {list.status === "draft" && draftItems.length > 0 && (
+        <div
+          className={cn(
+            "z-30 mt-auto border-t bg-background py-3",
+            // Во время редактирования кнопка заблокирована и не перекрывает поля.
+            editingId === null &&
+              "sticky bottom-[calc(3.75rem+env(safe-area-inset-bottom))]"
+          )}
+        >
           <Button
             ref={addButtonRef}
             className="h-10 w-full"
+            disabled={actionsDisabled}
             onClick={() => setAddDialog("source")}
           >
             <Plus className="h-4 w-4" aria-hidden />
@@ -411,6 +734,45 @@ export function ShoppingListView() {
           </Button>
         </div>
       )}
+
+      <AlertDialog
+        open={deleteItemId !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingRef.current) setDeleteItemId(null);
+        }}
+      >
+        <AlertDialogContent
+          className="max-h-[calc(100dvh-2rem)] overflow-y-auto"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const button = deleteReturnFocusRef.current;
+            if (button?.isConnected && !button.disabled) button.focus();
+            else focusList();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить пункт?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Пункт будет удалён из списка покупок
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={mutation !== null}>
+              Отмена
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={mutation !== null}
+              onClick={(event) => {
+                event.preventDefault();
+                if (deleteItemId !== null)
+                  void mutateDraft({ type: "delete", itemId: deleteItemId });
+              }}
+            >
+              {mutation === "delete" ? "Удаление…" : "Удалить"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Одновременно смонтирован только один основной диалог. */}
       {addDialog === "source" && (
