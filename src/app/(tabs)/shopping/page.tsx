@@ -10,7 +10,8 @@ export default function ShoppingPage() {
   return (
     <>
       <AppHeader title="Покупки" />
-      <main className="flex flex-1 flex-col px-4 py-6">
+      {/* На этом экране свой нижний отступ под sticky-кнопку и safe area. */}
+      <main className="-mb-24 flex flex-1 flex-col px-4 pb-[calc(3.75rem+env(safe-area-inset-bottom))] pt-6">
         <ShoppingListView />
       </main>
     </>

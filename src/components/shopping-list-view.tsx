@@ -1,15 +1,21 @@
 "use client";
 
 import { AlertCircle, ListPlus, Plus, ShoppingCart } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AddFromCatalogDialog } from "@/components/add-from-catalog-dialog";
+import { AddItemSourceDialog } from "@/components/add-item-source-dialog";
+import { AddManualItemDialog } from "@/components/add-manual-item-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { daysLeft, formatDays, formatQuantity } from "@/lib/format";
+import {
+  addManualShoppingItem,
+  type ManualItemInput,
+} from "@/lib/shopping-items";
 import {
   loadActiveShoppingList,
   loadDraftShoppingList,
@@ -125,8 +131,18 @@ export function ShoppingListView() {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [creating, setCreating] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
+  const [addDialog, setAddDialog] = useState<
+    "source" | "catalog" | "manual" | null
+  >(null);
   const [adding, setAdding] = useState(false);
+  const savingRef = useRef(false);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+
+  const closeAddDialog = () => {
+    if (savingRef.current) return;
+    setAddDialog(null);
+    requestAnimationFrame(() => addButtonRef.current?.focus());
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -199,17 +215,27 @@ export function ShoppingListView() {
   };
 
   const handleAddFromCatalog = async (product: Product) => {
-    if (list === null || adding) return;
+    if (list?.status !== "draft" || savingRef.current) return;
     if (existingProductIds.has(product.id)) {
       toast(
         "Этот продукт уже в списке. Измените количество в существующем пункте"
       );
       return;
     }
+    savingRef.current = true;
     setAdding(true);
     try {
       // Хранилище пишет массив целиком: читаем свежие пункты и дописываем в конец.
       const allItems = await loadShoppingItems();
+      if (
+        allItems.some(
+          (item) => item.listId === list.id && item.productId === product.id
+        )
+      ) {
+        setItems(allItems);
+        toast("Этот продукт уже в списке");
+        return;
+      }
       const now = new Date().toISOString();
       const item: ShoppingItem = {
         id: createId(),
@@ -225,17 +251,50 @@ export function ShoppingListView() {
       const next = [...allItems, item];
       await saveShoppingItems(next);
       setItems(next);
-      setAddOpen(false);
+      setAddDialog(null);
+      requestAnimationFrame(() => addButtonRef.current?.focus());
       toast.success("Добавлено в список");
     } catch {
       // Запись не прошла: модалка остаётся открытой, данные не менялись.
       toast.error("Не удалось добавить пункт");
     } finally {
+      savingRef.current = false;
       setAdding(false);
     }
   };
 
-  // Режим похода, ручной ввод и правка количества — следующие шаги.
+  const handleAddManual = async (input: ManualItemInput) => {
+    if (list?.status !== "draft" || savingRef.current) return;
+    savingRef.current = true;
+    setAdding(true);
+    try {
+      const allItems = await loadShoppingItems();
+      // Только уже сохранённые данные: актуализируем проверку дублей в форме.
+      setItems(allItems);
+      const next = addManualShoppingItem(
+        allItems,
+        list.id,
+        input,
+        createId(),
+        new Date().toISOString()
+      );
+      await saveShoppingItems(next);
+      setItems(next);
+      setAddDialog(null);
+      requestAnimationFrame(() => addButtonRef.current?.focus());
+      toast.success(
+        input.increaseItem ? "Количество увеличено" : "Добавлено в список"
+      );
+    } catch (error) {
+      console.error("Не удалось сохранить ручной пункт списка покупок", error);
+      toast.error("Не удалось сохранить пункт. Попробуйте ещё раз");
+    } finally {
+      savingRef.current = false;
+      setAdding(false);
+    }
+  };
+
+  // Режим похода и правка количества — следующие шаги.
   const notYet = () => toast("Функция появится на следующем шаге");
 
   const retry = () => {
@@ -300,30 +359,30 @@ export function ShoppingListView() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-1 flex-col gap-3">
       <ListHeader status={list.status} />
-      <div className="grid grid-cols-2 gap-2">
-        <Button className="h-10" onClick={() => setAddOpen(true)}>
-          <Plus className="h-4 w-4" aria-hidden />
-          Добавить пункт
-        </Button>
-        <Button variant="outline" className="h-10" onClick={notYet}>
+      {draftItems.length > 0 && (
+        <Button variant="outline" className="h-10 w-full" onClick={notYet}>
           Начать поход
         </Button>
-      </div>
+      )}
 
       {draftItems.length === 0 ? (
-        <>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-6">
           <EmptyState
             icon={ListPlus}
             title="Добавьте первый пункт"
-            description="Выберите продукты из каталога перед походом в магазин."
+            description="Выберите продукты из каталога или добавьте пункт вручную."
           />
-          <Button className="h-10 w-full" onClick={() => setAddOpen(true)}>
+          <Button
+            ref={addButtonRef}
+            className="h-10"
+            onClick={() => setAddDialog("source")}
+          >
             <Plus className="h-4 w-4" aria-hidden />
-            Добавить из каталога
+            Добавить пункт
           </Button>
-        </>
+        </div>
       ) : (
         <ul className="space-y-2">
           {draftItems.map((item) => (
@@ -340,18 +399,53 @@ export function ShoppingListView() {
         </ul>
       )}
 
-      {/* Ключ по open: при каждом открытии поиск монтируется с чистым состоянием. */}
-      <AddFromCatalogDialog
-        key={addOpen ? "open" : "closed"}
-        open={addOpen}
-        onOpenChange={(open) => {
-          if (!open) setAddOpen(false);
-        }}
-        products={products}
-        existingProductIds={existingProductIds}
-        saving={adding}
-        onSelect={(product) => void handleAddFromCatalog(product)}
-      />
+      {draftItems.length > 0 && (
+        <div className="sticky bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-30 mt-auto border-t bg-background py-3">
+          <Button
+            ref={addButtonRef}
+            className="h-10 w-full"
+            onClick={() => setAddDialog("source")}
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            Добавить пункт
+          </Button>
+        </div>
+      )}
+
+      {/* Одновременно смонтирован только один основной диалог. */}
+      {addDialog === "source" && (
+        <AddItemSourceDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closeAddDialog();
+          }}
+          onPickCatalog={() => setAddDialog("catalog")}
+          onPickManual={() => setAddDialog("manual")}
+        />
+      )}
+      {addDialog === "catalog" && (
+        <AddFromCatalogDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closeAddDialog();
+          }}
+          products={products}
+          existingProductIds={existingProductIds}
+          saving={adding}
+          onSelect={(product) => void handleAddFromCatalog(product)}
+        />
+      )}
+      {addDialog === "manual" && (
+        <AddManualItemDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closeAddDialog();
+          }}
+          manualItems={draftItems.filter((item) => item.productId === null)}
+          saving={adding}
+          onSubmit={(input) => void handleAddManual(input)}
+        />
+      )}
     </div>
   );
 }

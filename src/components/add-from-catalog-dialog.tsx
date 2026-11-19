@@ -61,7 +61,9 @@ function CatalogRow({
         className={cn(
           "flex w-full items-center justify-between gap-3 rounded-xl border bg-card p-3 text-left transition-colors",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-          inList ? "cursor-not-allowed opacity-60" : "enabled:hover:bg-accent/60"
+          inList
+            ? "cursor-not-allowed opacity-60"
+            : "enabled:hover:bg-accent/60"
         )}
       >
         <span className="min-w-0">
@@ -116,7 +118,7 @@ export function AddFromCatalogDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Добавить из каталога</DialogTitle>
           <DialogDescription>
@@ -127,7 +129,7 @@ export function AddFromCatalogDialog({
         {products.length === 0 ? (
           <div className="py-6 text-center" role="status">
             <p className="mx-auto max-w-[280px] text-sm text-muted-foreground">
-              На странице "Остатки" пока нет продуктов. Добавьте их, чтобы
+              На странице «Остатки» пока нет продуктов. Добавьте их, чтобы
               выбирать из каталога
             </p>
             <Button

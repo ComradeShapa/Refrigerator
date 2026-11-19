@@ -58,7 +58,7 @@ export function AddItemSourceDialog({
 }: AddItemSourceDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>Добавить пункт</DialogTitle>
           <DialogDescription>
