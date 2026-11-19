@@ -161,6 +161,14 @@ function parseShoppingItem(value: unknown): ShoppingItem | null {
   ) {
     return null;
   }
+  const actual = parseNumber(value.actualQuantity);
+  const actualQuantity =
+    value.status === "bought" && actual !== null && actual > 0 ? actual : null;
+  // Не выдумываем факт покупки: старый/повреждённый bought требует подтверждения.
+  const status =
+    value.status === "bought" && actualQuantity === null
+      ? "pending"
+      : value.status;
   return {
     id: value.id,
     listId: value.listId,
@@ -168,7 +176,8 @@ function parseShoppingItem(value: unknown): ShoppingItem | null {
     name: parseOptionalText(value.name),
     unit: value.unit,
     plannedQuantity: parseNumber(value.plannedQuantity),
-    status: value.status,
+    status,
+    actualQuantity,
     createdAt,
     updatedAt,
   };

@@ -69,6 +69,7 @@ export function addManualShoppingItem(
       name,
       unit: input.unit,
       plannedQuantity: input.quantity,
+      actualQuantity: null,
       status: "pending",
       createdAt: now,
       updatedAt: now,

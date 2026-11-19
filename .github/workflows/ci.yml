@@ -36,7 +36,7 @@ jobs:
         run: bun run build
 
       - name: Shopping items tests (Node.js)
-        run: node --test tests/shopping-items.test.mjs tests/shopping-draft.test.mjs
+        run: node --test tests/shopping-items.test.mjs tests/shopping-draft.test.mjs tests/shopping-active.test.mjs
 
       - name: Auto-deduction self-check (Bun)
         run: bun run src/lib/auto-deduction.check.ts

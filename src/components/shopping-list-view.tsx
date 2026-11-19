@@ -13,6 +13,13 @@ import { toast } from "sonner";
 import { AddFromCatalogDialog } from "@/components/add-from-catalog-dialog";
 import { AddItemSourceDialog } from "@/components/add-item-source-dialog";
 import { AddManualItemDialog } from "@/components/add-manual-item-dialog";
+import { ActiveShoppingItem } from "@/components/active-shopping-item";
+import {
+  changeActiveItem,
+  shoppingProgress,
+  ShoppingActiveError,
+  type ActiveChange,
+} from "@/lib/shopping-active";
 import { EmptyState } from "@/components/empty-state";
 import {
   AlertDialog,
@@ -293,7 +300,7 @@ export function ShoppingListView() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
   const [mutation, setMutation] = useState<
-    "quantity" | "delete" | "start" | null
+    "quantity" | "delete" | "start" | "active" | null
   >(null);
   const savingRef = useRef(false);
   const addButtonRef = useRef<HTMLButtonElement>(null);
@@ -364,6 +371,7 @@ export function ShoppingListView() {
     () => (list === null ? [] : itemsOfList(items, list.id)),
     [items, list]
   );
+  const progress = shoppingProgress(draftItems);
 
   const productsById = useMemo(
     () => new Map(products.map((product) => [product.id, product])),
@@ -433,6 +441,7 @@ export function ShoppingListView() {
         name: null,
         unit: product.unit,
         plannedQuantity: 1,
+        actualQuantity: null,
         status: "pending",
         createdAt: now,
         updatedAt: now,
@@ -583,6 +592,65 @@ export function ShoppingListView() {
     }
   };
 
+  const mutateActive = async (
+    expected: ShoppingItem,
+    change: ActiveChange
+  ): Promise<boolean> => {
+    if (list?.status !== "active" || savingRef.current) return false;
+    savingRef.current = true;
+    setMutation("active");
+    try {
+      const [lists, allItems] = await Promise.all([
+        loadShoppingLists(),
+        loadShoppingItems(),
+      ]);
+      let next: ShoppingItem[];
+      try {
+        next = changeActiveItem(
+          lists,
+          allItems,
+          list,
+          expected,
+          change,
+          new Date().toISOString()
+        );
+      } catch (error) {
+        if (error instanceof ShoppingActiveError) {
+          setItems(allItems);
+          const householdLists = lists.filter(
+            (entry) => entry.householdId === list.householdId
+          );
+          setList(
+            householdLists.find((entry) => entry.status === "active") ??
+              householdLists
+                .filter((entry) => entry.status === "draft")
+                .sort(
+                  (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+                )[0] ??
+              null
+          );
+          setEditingId(null);
+          requestAnimationFrame(focusList);
+        }
+        throw error;
+      }
+      await saveShoppingItems(next);
+      setItems(next);
+      toast.success("Изменения сохранены");
+      return true;
+    } catch (error) {
+      toast.error(
+        error instanceof ShoppingActiveError
+          ? error.message
+          : "Не удалось сохранить пункт. Попробуйте ещё раз"
+      );
+      return false;
+    } finally {
+      savingRef.current = false;
+      setMutation(null);
+    }
+  };
+
   const retry = () => {
     setFailed(false);
     setAttempt((value) => value + 1);
@@ -641,6 +709,14 @@ export function ShoppingListView() {
       className="flex flex-1 flex-col gap-3 outline-none"
     >
       <ListHeader status={list.status} />
+      {list.status === "active" && (
+        <div role="status" className="text-sm text-muted-foreground">
+          Обработано {progress.processed} из {progress.total}
+          {progress.total > 0 && progress.processed === progress.total && (
+            <p>Все пункты обработаны</p>
+          )}
+        </div>
+      )}
       {list.status === "draft" && draftItems.length > 0 && (
         <Button
           variant="outline"
@@ -671,46 +747,70 @@ export function ShoppingListView() {
         </div>
       ) : (
         <ul className="space-y-2">
-          {draftItems.map((item) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              product={
-                item.productId === null
-                  ? null
-                  : (productsById.get(item.productId) ?? null)
-              }
-              editButtonRef={(element) => {
-                if (element) editButtonRefs.current.set(item.id, element);
-                else editButtonRefs.current.delete(item.id);
-              }}
-              actions={
-                list.status === "draft"
-                  ? {
-                      disabled: actionsDisabled,
-                      editing: editingId === item.id,
-                      saving: mutation !== null,
-                      onEdit: () => {
-                        if (!savingRef.current && !actionsDisabled)
-                          setEditingId(item.id);
-                      },
-                      onDelete: (button) => {
-                        if (savingRef.current || actionsDisabled) return;
-                        deleteReturnFocusRef.current = button;
-                        setDeleteItemId(item.id);
-                      },
-                      onSave: (quantity) =>
-                        void mutateDraft({
-                          type: "quantity",
-                          itemId: item.id,
-                          quantity,
-                        }),
-                      onCancel: () => closeEditor(item.id),
-                    }
-                  : undefined
-              }
-            />
-          ))}
+          {draftItems.map((item) =>
+            list.status === "active" ? (
+              <ActiveShoppingItem
+                key={item.id}
+                item={item}
+                name={
+                  item.productId === null
+                    ? (item.name ?? "Без названия")
+                    : (productsById.get(item.productId)?.name ??
+                      "Продукт удалён")
+                }
+                disabled={actionsDisabled}
+                editing={editingId === item.id}
+                saving={mutation !== null}
+                onEdit={() => {
+                  if (!savingRef.current && !actionsDisabled)
+                    setEditingId(item.id);
+                }}
+                onCancel={() => {
+                  if (!savingRef.current) setEditingId(null);
+                }}
+                onChange={(change) => mutateActive(item, change)}
+              />
+            ) : (
+              <ItemCard
+                key={item.id}
+                item={item}
+                product={
+                  item.productId === null
+                    ? null
+                    : (productsById.get(item.productId) ?? null)
+                }
+                editButtonRef={(element) => {
+                  if (element) editButtonRefs.current.set(item.id, element);
+                  else editButtonRefs.current.delete(item.id);
+                }}
+                actions={
+                  list.status === "draft"
+                    ? {
+                        disabled: actionsDisabled,
+                        editing: editingId === item.id,
+                        saving: mutation !== null,
+                        onEdit: () => {
+                          if (!savingRef.current && !actionsDisabled)
+                            setEditingId(item.id);
+                        },
+                        onDelete: (button) => {
+                          if (savingRef.current || actionsDisabled) return;
+                          deleteReturnFocusRef.current = button;
+                          setDeleteItemId(item.id);
+                        },
+                        onSave: (quantity) =>
+                          void mutateDraft({
+                            type: "quantity",
+                            itemId: item.id,
+                            quantity,
+                          }),
+                        onCancel: () => closeEditor(item.id),
+                      }
+                    : undefined
+                }
+              />
+            )
+          )}
         </ul>
       )}
 
