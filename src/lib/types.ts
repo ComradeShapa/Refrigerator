@@ -59,6 +59,8 @@ export type ShoppingItem = {
   unit: Unit;
   /** Планируемое количество; `null` — количество не указано. */
   plannedQuantity: number | null;
+  /** Фактически куплено; только для статуса bought. */
+  actualQuantity: number | null;
   status: ShoppingItemStatus;
   createdAt: string;
   updatedAt: string;

@@ -27,6 +27,7 @@ const manual = Object.freeze({
   name: "Хлеб",
   unit: "шт",
   plannedQuantity: 1,
+  actualQuantity: null,
   status: "pending",
   createdAt,
   updatedAt: createdAt,
