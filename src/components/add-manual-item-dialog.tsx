@@ -30,6 +30,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { parseAmount } from "@/lib/product-form";
+import {
+  findManualDuplicate,
+  type ManualItemInput,
+} from "@/lib/shopping-items";
 import type { ShoppingItem, Unit } from "@/lib/types";
 
 const UNITS: Unit[] = ["шт", "г", "кг", "мл", "л"];
@@ -39,15 +43,6 @@ const EMPTY_FORM: FormValues = { name: "", quantity: "1", unit: "шт" };
 type FormValues = { name: string; quantity: string; unit: Unit };
 
 type FormErrors = { name?: string; quantity?: string };
-
-/** Ввод пользователя: родитель создаёт пункт или увеличивает существующий. */
-export type ManualItemInput = {
-  name: string;
-  quantity: number;
-  unit: Unit;
-  /** Задан — увеличить plannedQuantity этого пункта вместо создания нового. */
-  increaseItem?: ShoppingItem;
-};
 
 type AddManualItemDialogProps = {
   open: boolean;
@@ -67,6 +62,8 @@ function AddManualItemDialogInner({
   onSubmit,
 }: AddManualItemDialogProps) {
   const nameRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [values, setValues] = useState<FormValues>(EMPTY_FORM);
   const [errors, setErrors] = useState<FormErrors>({});
   const [duplicate, setDuplicate] = useState<ShoppingItem | null>(null);
@@ -74,8 +71,30 @@ function AddManualItemDialogInner({
 
   const close = () => onOpenChange(false);
 
+  const rememberFormFocus = () => {
+    const focused = document.activeElement;
+    returnFocusRef.current =
+      focused instanceof HTMLElement && dialogRef.current?.contains(focused)
+        ? focused
+        : nameRef.current;
+  };
+
+  const restoreFormFocus = (event: Event) => {
+    event.preventDefault();
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (target?.isConnected && !target.matches(":disabled")) {
+      target.focus();
+    } else if (nameRef.current && !nameRef.current.disabled) {
+      nameRef.current.focus();
+    } else {
+      // При сохранении поля заблокированы; фокус остаётся внутри формы.
+      dialogRef.current?.focus();
+    }
+  };
+
   const isDirty =
-    values.name.trim() !== "" ||
+    values.name !== EMPTY_FORM.name ||
     values.quantity !== EMPTY_FORM.quantity ||
     values.unit !== EMPTY_FORM.unit;
 
@@ -83,6 +102,7 @@ function AddManualItemDialogInner({
   const requestClose = () => {
     if (saving) return;
     if (isDirty) {
+      rememberFormFocus();
       setConfirmClose(true);
     } else {
       close();
@@ -104,18 +124,18 @@ function AddManualItemDialogInner({
     if (quantity === null || quantity <= 0) {
       nextErrors.quantity = "Введите число больше 0";
     }
-    if (nextErrors.name !== undefined || nextErrors.quantity !== undefined) {
+    if (
+      quantity === null ||
+      nextErrors.name !== undefined ||
+      nextErrors.quantity !== undefined
+    ) {
       setErrors(nextErrors);
       return;
     }
     if (increaseItem === undefined) {
-      const needle = name.toLowerCase();
-      const found = manualItems.find(
-        (item) =>
-          item.productId === null &&
-          (item.name ?? "").trim().toLowerCase() === needle
-      );
+      const found = findManualDuplicate(manualItems, name, values.unit);
       if (found !== undefined) {
+        rememberFormFocus();
         setDuplicate(found);
         return;
       }
@@ -135,6 +155,8 @@ function AddManualItemDialogInner({
       }}
     >
       <DialogContent
+        ref={dialogRef}
+        className="max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => {
           // Фокус сразу в «Название», как в форме продукта.
           event.preventDefault();
@@ -151,7 +173,9 @@ function AddManualItemDialogInner({
         >
           <DialogHeader>
             <DialogTitle>Добавить вручную</DialogTitle>
-            <DialogDescription>Пункт появится в списке покупок.</DialogDescription>
+            <DialogDescription>
+              Пункт появится в списке покупок.
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-1.5">
@@ -159,6 +183,7 @@ function AddManualItemDialogInner({
             <Input
               id="manual-item-name"
               ref={nameRef}
+              disabled={saving}
               value={values.name}
               placeholder="Например, Хлеб"
               onChange={(event) => {
@@ -167,13 +192,14 @@ function AddManualItemDialogInner({
               }}
               aria-invalid={errors.name !== undefined}
               aria-describedby={
-                errors.name !== undefined
-                  ? "manual-item-name-error"
-                  : undefined
+                errors.name !== undefined ? "manual-item-name-error" : undefined
               }
             />
             {errors.name !== undefined && (
-              <p id="manual-item-name-error" className="text-xs text-destructive">
+              <p
+                id="manual-item-name-error"
+                className="text-xs text-destructive"
+              >
                 {errors.name}
               </p>
             )}
@@ -186,6 +212,7 @@ function AddManualItemDialogInner({
                 id="manual-item-quantity"
                 type="text"
                 inputMode="decimal"
+                disabled={saving}
                 value={values.quantity}
                 onChange={(event) => {
                   setValues((prev) => ({
@@ -213,6 +240,7 @@ function AddManualItemDialogInner({
             <div className="space-y-1.5">
               <Label htmlFor="manual-item-unit">Единица измерения</Label>
               <Select
+                disabled={saving}
                 value={values.unit}
                 onValueChange={(value) => {
                   setValues((prev) => ({ ...prev, unit: value as Unit }));
@@ -257,7 +285,7 @@ function AddManualItemDialogInner({
           if (!next) setDuplicate(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent onCloseAutoFocus={restoreFormFocus}>
           <AlertDialogHeader>
             <AlertDialogTitle>Такой пункт уже есть</AlertDialogTitle>
             <AlertDialogDescription>
@@ -265,8 +293,9 @@ function AddManualItemDialogInner({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogCancel disabled={saving}>Отмена</AlertDialogCancel>
             <AlertDialogAction
+              disabled={saving}
               onClick={() => {
                 const found = duplicate;
                 setDuplicate(null);
@@ -280,7 +309,7 @@ function AddManualItemDialogInner({
       </AlertDialog>
 
       <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
-        <AlertDialogContent>
+        <AlertDialogContent onCloseAutoFocus={restoreFormFocus}>
           <AlertDialogHeader>
             <AlertDialogTitle>Закрыть без сохранения?</AlertDialogTitle>
             <AlertDialogDescription>
